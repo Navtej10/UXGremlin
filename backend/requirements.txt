@@ -2,3 +2,5 @@ fastapi[standard]
 uvicorn
 playwright
 pydantic
+groq
+python-dotenv

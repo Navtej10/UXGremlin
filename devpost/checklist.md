@@ -39,7 +39,7 @@ Build mode: fast
   Learner check: Submit the form and confirm the app transitions to a split-screen dashboard with streaming text appearing on the right.
   Commit: `Add Live Dashboard and mock streaming`
 
-- [ ] **4. The Sabotage Engine (Groq Vision Loop)**
+- [x] **4. The Sabotage Engine (Groq Vision Loop)**
   Becomes usable: The backend captures real screenshots of the browser, sends them to Groq Vision API, gets a decision, streams the thought to the frontend, and executes the action.
   Why now: This is the unique kernel. It integrates the AI to make real decisions on the webpage.
   PRD ref: `prd.md > Features and Behavior` (The Sabotage Engine)
@@ -92,3 +92,5 @@ Activity mode: [live app and editor, explicit static fallback, focused alternati
 
 ## Revisions
 
+- Added 'back' button navigation (to be implemented).
+- Improved UI styling for Live Dashboard to match the "sleek, mischievous SaaS tool" vibe (to be implemented).
