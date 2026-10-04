@@ -72,3 +72,10 @@ async def launch_agent(req: LaunchRequest, background_tasks: BackgroundTasks):
     message_queue = asyncio.Queue()
     background_tasks.add_task(launch_browser_task, req)
     return {"status": "started", "message": f"Browser launching for {req.url}"}
+
+if __name__ == "__main__":
+    import uvicorn
+    # This guarantees the policy is set before Uvicorn creates any event loops
+    if sys.platform == 'win32':
+        asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=False)
