@@ -9,7 +9,7 @@ Build mode: fast
 
 ## Slices
 
-- [ ] **1. Frontend scaffold and Launchpad form**
+- [x] **1. Frontend scaffold and Launchpad form**
   Becomes usable: The React frontend runs and shows the dark/neon styled Launchpad form where a user can enter URL, task, and persona.
   Why now: Proves the React setup and establishes the entry point of the app.
   PRD ref: `prd.md > The Core Journey` (step 1)
@@ -19,7 +19,7 @@ Build mode: fast
   Learner check: Start the frontend server, open the app, and confirm the Launchpad form looks like a sleek, mischievous SaaS tool.
   Commit: `Scaffold frontend and Launchpad form`
 
-- [ ] **2. Backend scaffold and Playwright connection**
+- [x] **2. Backend scaffold and Playwright connection**
   Becomes usable: FastAPI backend receives a request from the Launchpad, starts a Playwright browser locally, and navigates to the URL.
   Why now: Connects frontend to backend and proves the core browser automation capability without AI yet.
   PRD ref: `prd.md > The Core Journey` (step 2)
@@ -29,7 +29,7 @@ Build mode: fast
   Learner check: Submit a URL in the Launchpad and confirm a real browser window opens on your machine and goes to that URL.
   Commit: `Connect frontend to FastAPI and launch Playwright`
 
-- [ ] **3. Live Dashboard layout and basic streaming**
+- [x] **3. Live Dashboard layout and basic streaming**
   Becomes usable: The UI transitions to the Live Dashboard, showing a placeholder for the browser view and receiving simulated live text updates from the backend.
   Why now: Proves the streaming connection (WebSocket or SSE) before adding the complexity of the AI loop.
   PRD ref: `prd.md > The Core Journey` (step 3), `prd.md > Screens and Layout`

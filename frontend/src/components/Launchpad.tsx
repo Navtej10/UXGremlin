@@ -1,15 +1,29 @@
 import { useState } from 'react';
 import { Skull, Zap } from 'lucide-react';
 
-export function Launchpad() {
+export function Launchpad({ onLaunch }: { onLaunch: (data: { url: string; task: string; persona: string }) => void }) {
   const [url, setUrl] = useState('');
   const [task, setTask] = useState('');
   const [persona, setPersona] = useState('impatient');
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     console.log('Launch attack:', { url, task, persona });
-    // TODO: Send to backend
+    try {
+      const response = await fetch('http://127.0.0.1:8000/api/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, task, persona }),
+      });
+      if (response.ok) {
+        console.log("Attack launched successfully!");
+        onLaunch({ url, task, persona });
+      } else {
+        console.error("Failed to launch attack.");
+      }
+    } catch (err) {
+      console.error("Error launching attack:", err);
+    }
   };
 
   return (
