@@ -1,0 +1,15 @@
+@import "tailwindcss";
+
+@theme {
+  --color-gremlin-green: #39FF14;
+  --color-gremlin-purple: #9D00FF;
+  --color-bg-dark: #0B0C10;
+  --color-bg-card: #1F2833;
+  --color-text-main: #C5C6C7;
+}
+
+body {
+  background-color: var(--color-bg-dark);
+  color: var(--color-text-main);
+  font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+}
