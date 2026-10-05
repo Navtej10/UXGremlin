@@ -37,6 +37,7 @@ async def event_generator():
     while True:
         data = await message_queue.get()
         if data.get("done"):
+            yield f"data: {json.dumps(data)}\n\n"
             break
         yield f"data: {json.dumps(data)}\n\n"
 

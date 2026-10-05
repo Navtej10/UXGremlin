@@ -49,7 +49,7 @@ Build mode: fast
   Learner check: Add your Groq API key, launch a test on a simple site, and watch the AI's thoughts stream in while the browser clicks around.
   Commit: `Implement Groq vision loop and live action execution`
 
-- [ ] **5. Live Screenshot Streaming**
+- [x] **5. Live Screenshot Streaming**
   Becomes usable: The left pane of the Live Dashboard shows real-time screenshots of what the browser sees.
   Why now: Completes the Live Dashboard experience visually, requiring base64 image streaming alongside the text thoughts.
   PRD ref: `prd.md > The Core Journey` (step 3)
@@ -59,7 +59,7 @@ Build mode: fast
   Learner check: Run a test and confirm the LiveDashboard now shows the actual website on the left side updating as the agent works.
   Commit: `Stream live screenshots to Dashboard`
 
-- [ ] **6. The Sabotage Report & Slideshow**
+- [x] **6. The Sabotage Report & Slideshow**
   Becomes usable: When the task finishes or aborts, the app shows a summary score and an interactive slideshow of the entire run.
   Why now: Completes the core journey by providing the final output and value to the user.
   PRD ref: `prd.md > The Core Journey` (step 5), `prd.md > Features and Behavior` (Interactive Slideshow Replay)
@@ -92,5 +92,5 @@ Activity mode: [live app and editor, explicit static fallback, focused alternati
 
 ## Revisions
 
-- Added 'back' button navigation (to be implemented).
-- Improved UI styling for Live Dashboard to match the "sleek, mischievous SaaS tool" vibe (to be implemented).
+- Added 'back' button navigation (implemented).
+- Improved UI styling for Live Dashboard to match the "sleek, mischievous SaaS tool" vibe (implemented).

@@ -20,7 +20,7 @@ async def run_agent_loop(page: Page, task: str, persona: str, queue: asyncio.Que
         screenshot_bytes = await page.screenshot(type="jpeg", quality=50)
         base64_image = base64.b64encode(screenshot_bytes).decode('utf-8')
         
-        await queue.put({"thought": "Analyzing page structure and taking screenshot..."})
+        await queue.put({"thought": "Analyzing page structure and taking screenshot...", "screenshot": base64_image})
         
         # Build prompt
         prompt = f"""

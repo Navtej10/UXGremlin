@@ -1,32 +1,60 @@
 import { useEffect, useState, useRef } from 'react';
 import { Terminal, Activity, MonitorPlay } from 'lucide-react';
 
+import { HistoryItem } from './Report';
+
 interface LiveDashboardProps {
   session: {
     url: string;
     task: string;
     persona: string;
   };
+  onComplete: (history: HistoryItem[]) => void;
 }
 
-export function LiveDashboard({ session }: LiveDashboardProps) {
+export function LiveDashboard({ session, onComplete }: LiveDashboardProps) {
   const [thoughts, setThoughts] = useState<string[]>([]);
+  const [currentScreenshot, setCurrentScreenshot] = useState<string | null>(null);
   const thoughtsEndRef = useRef<HTMLDivElement>(null);
+  
+  // Ref to hold mutable history without triggering re-renders for every item if not needed,
+  // though we do want to store it to pass to Report.
+  const historyRef = useRef<HistoryItem[]>([]);
 
   useEffect(() => {
     const eventSource = new EventSource('http://127.0.0.1:8000/api/stream');
     
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
+      
+      if (data.done) {
+        eventSource.close();
+        onComplete(historyRef.current);
+        return;
+      }
+      
+      if (data.thought || data.screenshot) {
+        historyRef.current = [
+          ...historyRef.current,
+          {
+            thought: data.thought || (historyRef.current.length > 0 ? historyRef.current[historyRef.current.length - 1].thought : ""),
+            screenshot: data.screenshot || null
+          }
+        ];
+      }
+
       if (data.thought) {
         setThoughts((prev) => [...prev, data.thought]);
+      }
+      if (data.screenshot) {
+        setCurrentScreenshot(data.screenshot);
       }
     };
 
     return () => {
       eventSource.close();
     };
-  }, []);
+  }, [onComplete]);
 
   useEffect(() => {
     thoughtsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -45,21 +73,35 @@ export function LiveDashboard({ session }: LiveDashboardProps) {
           <div className="text-gray-400">Target: <span className="text-white">{session.url}</span></div>
           <div className="text-gray-400">Task: <span className="text-white">{session.task}</span></div>
         </div>
+        <button
+          onClick={() => onComplete(historyRef.current)}
+          className="px-3 py-1.5 bg-red-900/50 hover:bg-red-900/80 text-red-300 text-xs font-bold rounded uppercase tracking-wider transition-colors border border-red-800/50"
+        >
+          Abort Attack
+        </button>
       </div>
 
       {/* Main Content */}
-      <div className="flex-1 flex min-h-0">
+      <div className="flex-1 flex min-h-0 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-gray-900 via-bg-dark to-black">
         {/* Left Pane - Browser View (65%) */}
-        <div className="flex-[0.65] border-r border-gray-800 p-4 flex flex-col relative bg-black/20">
-          <div className="flex items-center gap-2 mb-4 text-gray-400 text-sm uppercase tracking-wider font-semibold">
+        <div className="flex-[0.65] border-r border-gray-800 p-6 flex flex-col relative bg-black/40">
+          <div className="flex items-center gap-2 mb-4 text-gremlin-green text-sm uppercase tracking-wider font-semibold drop-shadow-[0_0_8px_rgba(57,255,20,0.5)]">
             <MonitorPlay className="w-4 h-4" />
             Live Browser View
           </div>
           
-          <div className="flex-1 border border-gray-800 rounded-lg bg-black flex items-center justify-center overflow-hidden">
-            <div className="text-gray-600 animate-pulse text-sm">
-              Waiting for browser stream...
-            </div>
+          <div className="flex-1 border border-gray-700/50 rounded-lg bg-black flex items-center justify-center overflow-hidden shadow-2xl relative">
+            {/* Subtle scanline effect */}
+            <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_4px,3px_100%] z-10 pointer-events-none opacity-20"></div>
+            
+            {currentScreenshot ? (
+              <img src={`data:image/jpeg;base64,${currentScreenshot}`} alt="Live Browser View" className="w-full h-full object-contain relative z-0" />
+            ) : (
+              <div className="text-gray-500 animate-pulse text-sm font-mono flex flex-col items-center gap-3">
+                <Activity className="w-6 h-6 text-gremlin-purple" />
+                Establishing connection to target...
+              </div>
+            )}
           </div>
         </div>
 
