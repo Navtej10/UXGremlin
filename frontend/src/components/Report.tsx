@@ -16,6 +16,13 @@ interface ReportProps {
   onRestart: () => void;
 }
 
+const PERSONA_NAMES: Record<string, string> = {
+  pro_tester: '🎯 Professional UX Tester',
+  impatient: '😈 Impatient User',
+  confused: '😵‍💫 Confused User',
+  skeptic: '🧐 Skeptical User',
+};
+
 export function Report({ session, history, onRestart }: ReportProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
 
@@ -44,7 +51,15 @@ export function Report({ session, history, onRestart }: ReportProps) {
   const frictionCount = history.filter(item =>
     item.thought.toLowerCase().includes('friction') ||
     item.thought.toLowerCase().includes('failed') ||
-    item.thought.toLowerCase().includes('error')
+    item.thought.toLowerCase().includes('error') ||
+    item.thought.toLowerCase().includes('bug')
+  ).length;
+
+  const bugsIdentified = history.filter(item =>
+    item.thought.toLowerCase().includes('[ux bug]') ||
+    item.thought.toLowerCase().includes('bug:') ||
+    item.thought.toLowerCase().includes('bug found') ||
+    item.thought.toLowerCase().includes('defect')
   ).length;
 
   let frictionScore: number;
@@ -103,7 +118,9 @@ export function Report({ session, history, onRestart }: ReportProps) {
           </div>
           <div>
             <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-2">Persona</h2>
-            <p className="text-lg text-gremlin-purple">{session.persona}</p>
+            <p className="text-lg text-gremlin-purple font-semibold">
+              {PERSONA_NAMES[session.persona] || session.persona}
+            </p>
           </div>
           
           <div className="mt-8 p-6 bg-black/40 border border-gray-800 rounded-lg text-center">
@@ -114,6 +131,12 @@ export function Report({ session, history, onRestart }: ReportProps) {
             <p className={`text-sm mt-2 font-medium ${hasCompleted ? 'text-gray-400' : 'text-red-400'}`}>
               {statusText}
             </p>
+            {session.persona === 'pro_tester' && (
+              <div className="mt-4 pt-4 border-t border-gray-800/80 flex items-center justify-around text-xs">
+                <span className="text-gray-400">QA Bugs Found:</span>
+                <span className="font-bold text-gremlin-green text-sm">{bugsIdentified}</span>
+              </div>
+            )}
           </div>
         </div>
 

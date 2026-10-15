@@ -78,6 +78,12 @@ export function LiveDashboard({ session, onComplete }: LiveDashboardProps) {
           <div className="h-4 w-px bg-gray-700"></div>
           <div className="text-gray-400">Target: <span className="text-white">{session.url}</span></div>
           <div className="text-gray-400">Task: <span className="text-white">{session.task}</span></div>
+          <div className="text-gray-400">Persona: <span className="text-gremlin-purple font-semibold">
+            {session.persona === 'pro_tester' ? '🎯 Professional UX Tester' :
+             session.persona === 'impatient' ? '😈 Impatient User' :
+             session.persona === 'confused' ? '😵‍💫 Confused User' :
+             session.persona === 'skeptic' ? '🧐 Skeptical User' : session.persona}
+          </span></div>
         </div>
         <button
           onClick={() => onComplete(historyRef.current)}

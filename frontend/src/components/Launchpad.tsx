@@ -4,7 +4,7 @@ import { Skull, Zap } from 'lucide-react';
 export function Launchpad({ onLaunch }: { onLaunch: (data: { url: string; task: string; persona: string }) => void }) {
   const [url, setUrl] = useState('');
   const [task, setTask] = useState('');
-  const [persona, setPersona] = useState('impatient');
+  const [persona, setPersona] = useState('pro_tester');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -75,10 +75,17 @@ export function Launchpad({ onLaunch }: { onLaunch: (data: { url: string; task: 
                 onChange={(e) => setPersona(e.target.value)}
                 className="w-full px-4 py-3 bg-bg-dark border border-gray-700 rounded-lg focus:outline-none focus:border-gremlin-purple focus:ring-1 focus:ring-gremlin-purple text-white transition-colors appearance-none"
               >
+                <option value="pro_tester">🎯 Professional UX Tester (Audits all buttons, layouts, fields & finds bugs)</option>
                 <option value="impatient">😈 Impatient User (Rushes, skips reading)</option>
                 <option value="confused">😵‍💫 Confused User (Clicks randomly, gets lost)</option>
                 <option value="skeptic">🧐 Skeptical User (Hesitates, looks for hidden catches)</option>
               </select>
+              {persona === 'pro_tester' && (
+                <p className="text-xs text-gremlin-green/90 mt-2 flex items-center gap-1.5">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-gremlin-green animate-pulse"></span>
+                  Methodically audits buttons, layout integrity, form fields, and exposes UX bugs.
+                </p>
+              )}
             </div>
 
             <button
