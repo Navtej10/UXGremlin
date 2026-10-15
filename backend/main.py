@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.async_api import async_playwright
-from agent import run_agent_loop
+from agent import run_agent_loop, LAST_REPORT
 
 app = FastAPI()
 
@@ -107,9 +107,15 @@ async def stream_events(request: Request):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 
+@app.get("/api/report")
+async def get_report():
+    return LAST_REPORT
+
+
 @app.post("/api/launch")
 async def launch_agent(req: LaunchRequest):
     global message_queue
+    LAST_REPORT.clear()
     # Fresh queue for each run.
     message_queue = stdlib_queue.Queue()
     t = threading.Thread(target=_playwright_thread, args=(req, message_queue), daemon=True)

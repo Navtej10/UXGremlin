@@ -3,3 +3,5 @@
 .env.*
 !.env.example
 run_commands.txt
+__pycache__/
+*.pyc

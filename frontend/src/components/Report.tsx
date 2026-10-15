@@ -1,9 +1,32 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ChevronLeft, ChevronRight, RefreshCcw, ShieldAlert } from 'lucide-react';
 
 export interface HistoryItem {
   thought: string;
   screenshot: string | null;
+}
+
+interface ScorePart {
+  name: string;
+  points: number;
+  evidence: number[];
+  why: string;
+}
+
+interface Finding {
+  title: string;
+  severity: 'critical' | 'high' | 'medium';
+  evidence_steps: number[];
+  what_happened: string;
+  impact: string;
+  recommendation: string;
+}
+
+interface SabotageReport {
+  score: { total: number; label: string; parts: ScorePart[]; steps_taken: number; ideal_steps: number };
+  verdict: string;
+  findings: Finding[];
+  bugs?: number;
 }
 
 interface ReportProps {
@@ -25,6 +48,40 @@ const PERSONA_NAMES: Record<string, string> = {
 
 export function Report({ session, history, onRestart }: ReportProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
+  const [report, setReport] = useState<SabotageReport | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let tries = 0;
+    const load = async () => {
+      try {
+        const res = await fetch('http://127.0.0.1:8000/api/report');
+        const data = await res.json();
+        if (data?.score) {
+          if (!cancelled) setReport(data as SabotageReport);
+          return;
+        }
+      } catch {
+        /* retry below */
+      }
+      if (!cancelled && ++tries < 15) setTimeout(load, 1000);
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const jumpToStep = (n: number) => {
+    const prefix = `Step ${n} · `;
+    const exec = history.findIndex((h) => h.thought.startsWith(`${prefix}Executing`));
+    const any = history.findIndex((h) => h.thought.startsWith(prefix));
+    const i = exec >= 0 ? exec : any;
+    if (i >= 0) setCurrentIndex(i);
+  };
+
+  const total = report?.score.total ?? 0;
+  const scoreColor = total < 25 ? 'text-gremlin-green' : total < 50 ? 'text-amber-400' : 'text-red-500';
 
   const handlePrev = () => {
     setCurrentIndex((prev) => Math.max(0, prev - 1));
@@ -33,56 +90,6 @@ export function Report({ session, history, onRestart }: ReportProps) {
   const handleNext = () => {
     setCurrentIndex((prev) => Math.min(history.length - 1, prev + 1));
   };
-
-  // Precise outcome and friction score calculation
-  const hasCompleted = history.some(item =>
-    item.thought.toLowerCase().includes('completed successfully') ||
-    item.thought.toLowerCase().includes('task completed')
-  );
-  const hasAborted = history.some(item =>
-    item.thought.toLowerCase().includes('abort')
-  );
-  const hasError = history.some(item =>
-    item.thought.toLowerCase().includes('error during') ||
-    item.thought.toLowerCase().includes('fatal error') ||
-    item.thought.toLowerCase().includes('action failed')
-  );
-
-  const frictionCount = history.filter(item =>
-    item.thought.toLowerCase().includes('friction') ||
-    item.thought.toLowerCase().includes('failed') ||
-    item.thought.toLowerCase().includes('error') ||
-    item.thought.toLowerCase().includes('bug')
-  ).length;
-
-  const bugsIdentified = history.filter(item =>
-    item.thought.toLowerCase().includes('[ux bug]') ||
-    item.thought.toLowerCase().includes('bug:') ||
-    item.thought.toLowerCase().includes('bug found') ||
-    item.thought.toLowerCase().includes('defect')
-  ).length;
-
-  let frictionScore: number;
-  let statusText: string;
-  let scoreColor: string;
-
-  if (hasCompleted) {
-    frictionScore = Math.min(65, Math.max(15, (history.length * 4) + (frictionCount * 12)));
-    statusText = "Task completed successfully.";
-    scoreColor = frictionScore > 50 ? "text-amber-400" : "text-gremlin-green";
-  } else if (hasAborted) {
-    frictionScore = 95;
-    statusText = "Task aborted due to extreme friction.";
-    scoreColor = "text-red-500";
-  } else if (hasError) {
-    frictionScore = 90;
-    statusText = "Task failed due to UX blocking error.";
-    scoreColor = "text-red-500";
-  } else {
-    frictionScore = 80;
-    statusText = "Task incomplete: user hit step limit.";
-    scoreColor = "text-amber-500";
-  }
 
   const currentItem = history[currentIndex];
 
@@ -123,21 +130,76 @@ export function Report({ session, history, onRestart }: ReportProps) {
             </p>
           </div>
           
-          <div className="mt-8 p-6 bg-black/40 border border-gray-800 rounded-lg text-center">
-            <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-4">Friction Score</h2>
-            <div className={`text-6xl font-black ${scoreColor}`}>
-              {frictionScore}
-            </div>
-            <p className={`text-sm mt-2 font-medium ${hasCompleted ? 'text-gray-400' : 'text-red-400'}`}>
-              {statusText}
-            </p>
-            {session.persona === 'pro_tester' && (
-              <div className="mt-4 pt-4 border-t border-gray-800/80 flex items-center justify-around text-xs">
-                <span className="text-gray-400">QA Bugs Found:</span>
-                <span className="font-bold text-gremlin-green text-sm">{bugsIdentified}</span>
-              </div>
+          <div className="mt-8 p-6 bg-black/40 border border-gray-800 rounded-lg">
+            <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-4 text-center">Friction Score</h2>
+            {!report ? (
+              <p className="text-center text-gray-500 text-sm">Generating report…</p>
+            ) : (
+              <>
+                <div className={`text-6xl font-black text-center ${scoreColor}`}>{report.score.total}</div>
+                <p className="text-center text-sm mt-1 text-gray-400">
+                  {report.score.label} friction · {report.score.steps_taken} steps taken, about {report.score.ideal_steps} expected
+                </p>
+                <p className="mt-4 text-sm text-gray-300">{report.verdict}</p>
+
+                <div className="mt-5 space-y-3">
+                  {report.score.parts.map((p) => (
+                    <div key={p.name}>
+                      <div className="flex justify-between text-sm">
+                        <span>{p.name}</span>
+                        <span className="text-gray-400">+{p.points}</span>
+                      </div>
+                      <div className="h-1.5 rounded bg-gray-800">
+                        <div className="h-1.5 rounded bg-red-500" style={{ width: `${Math.min(100, p.points * 5)}%` }} />
+                      </div>
+                      <p className="mt-1 text-xs text-gray-500">{p.why}</p>
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {p.evidence.slice(0, 8).map((n) => (
+                          <button
+                            key={n}
+                            onClick={() => jumpToStep(n)}
+                            className="px-1.5 py-0.5 text-xs rounded bg-gray-800 hover:bg-gray-700"
+                          >
+                            step {n}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {session.persona === 'pro_tester' && (
+                  <div className="mt-4 pt-4 border-t border-gray-800/80 flex items-center justify-around text-xs">
+                    <span className="text-gray-400">QA Bugs Found:</span>
+                    <span className="font-bold text-gremlin-green text-sm">{report.bugs ?? 0}</span>
+                  </div>
+                )}
+              </>
             )}
           </div>
+
+          {report?.findings.map((f) => (
+            <div key={f.title} className="p-4 bg-black/40 border border-gray-800 rounded-lg">
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold text-sm">{f.title}</h3>
+                <span className="text-xs uppercase text-red-400">{f.severity}</span>
+              </div>
+              <p className="mt-2 text-sm text-gray-300">{f.what_happened}</p>
+              <p className="mt-1 text-xs text-gray-500">Impact: {f.impact}</p>
+              <p className="mt-1 text-xs text-gremlin-green">Fix: {f.recommendation}</p>
+              <div className="mt-2 flex flex-wrap gap-1">
+                {f.evidence_steps.map((n) => (
+                  <button
+                    key={n}
+                    onClick={() => jumpToStep(n)}
+                    className="px-1.5 py-0.5 text-xs rounded bg-gray-800 hover:bg-gray-700"
+                  >
+                    step {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
 
         {/* Right Side: Slideshow */}

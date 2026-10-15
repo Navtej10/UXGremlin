@@ -47,11 +47,12 @@ export function LiveDashboard({ session, onComplete }: LiveDashboardProps) {
 
       if (data.thought) {
         setThoughts((prev) => [...prev, data.thought]);
+        const isDecided = data.thought.includes('Decided:');
         historyRef.current = [
           ...historyRef.current,
           {
             thought: data.thought,
-            screenshot: data.screenshot || lastScreenshotRef.current
+            screenshot: data.screenshot || (isDecided ? null : lastScreenshotRef.current)
           }
         ];
       }
@@ -131,7 +132,7 @@ export function LiveDashboard({ session, onComplete }: LiveDashboardProps) {
               thoughts.map((thought, index) => (
                 <div key={index} className="flex gap-3 text-gray-300">
                   <span className="text-gremlin-purple opacity-70 shrink-0">[{new Date().toLocaleTimeString()}]</span>
-                  <span className={thought.startsWith('Decided:') ? 'text-gremlin-green font-semibold' : ''}>
+                  <span className={thought.includes('Decided:') ? 'text-gremlin-green font-semibold' : ''}>
                     {thought}
                   </span>
                 </div>

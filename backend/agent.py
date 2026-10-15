@@ -6,10 +6,13 @@ import json
 from groq import Groq
 from playwright.async_api import Page
 from dotenv import load_dotenv
+from scoring import Step, compute_friction, build_report
 
 load_dotenv()
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
+REPORT_MODEL = "openai/gpt-oss-120b"
+LAST_REPORT: dict = {}
 
 SYSTEM_INSTRUCTIONS = (
     "You are an automated web usability and QA testing engine. "
@@ -275,6 +278,32 @@ async def perform_action(page: Page, action: str, target: str, value: str = ""):
 
     return True, None
 
+
+async def settle(page: Page, extra: float = 0.5):
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=2500)
+    except Exception:
+        pass
+    await asyncio.sleep(extra)
+
+
+async def screenshot_with_highlight(page: Page, target: str) -> str:
+    sel = normalize_target(target)
+    set_js = "(s) => { const el = document.querySelector(s); if (el) { el.style.outline = '4px solid #ef4444'; el.style.outlineOffset = '2px'; } }"
+    clear_js = "(s) => { const el = document.querySelector(s); if (el) { el.style.outline = ''; el.style.outlineOffset = ''; } }"
+    try:
+        await page.evaluate(set_js, sel)
+    except Exception:
+        pass
+    await asyncio.sleep(0.4)  # lets viewers see the target before the click
+    shot = await page.screenshot(type="jpeg", quality=50)
+    try:
+        await page.evaluate(clear_js, sel)
+    except Exception:
+        pass
+    return base64.b64encode(shot).decode("utf-8")
+
+
 MAX_AGENT_STEPS = 25
 
 async def run_agent_loop(page: Page, task: str, persona: str, queue: asyncio.Queue, max_steps: int = MAX_AGENT_STEPS):
@@ -283,9 +312,12 @@ async def run_agent_loop(page: Page, task: str, persona: str, queue: asyncio.Que
 
     last_error: str | None = None
     consecutive_errors = 0
+    steps: list[Step] = []
 
     for step in range(max_steps):
-        await asyncio.sleep(1.5) # allow page / animations to settle
+        await settle(page)
+        tag = f"Step {step + 1} · "
+        url_before = page.url
 
         # 1. Take current screenshot
         screenshot_bytes = await page.screenshot(type="jpeg", quality=50)
@@ -293,6 +325,7 @@ async def run_agent_loop(page: Page, task: str, persona: str, queue: asyncio.Que
 
         # 2. Extract visible interactive elements from DOM
         visible_elements = await extract_visible_interactive_elements(page)
+        labels = {el["id"]: el["text"] for el in visible_elements}
         
         elements_summary = "\n".join([
             f"- [{el['id']}] <{el['tag']}> \"{el['text']}\"" +
@@ -341,8 +374,12 @@ Expected JSON schema:
   "thought": "[UX Observation: checked search box] Clicking Search button to verify results.",
   "action": "click",
   "target": "uxg-20",
-  "value": ""
+  "value": "",
+  "friction": null
 }}
+"friction" must be null unless this moment would make a real user hesitate, backtrack, distrust the site, or hit a defect. Only then set it to
+{{"type": "navigation|cta|terminology|form|trust|bug", "note": "one sentence: what was confusing or broken, and why"}}.
+Only flag friction you can point to on screen. Most steps should be null.
 Valid "action" values: "click", "type", "scroll", "done", "abort".
 """
         try:
@@ -417,21 +454,30 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
             action = decision.get("action", "abort")
             target = decision.get("target", "")
             value = decision.get("value", "")
+            friction = decision.get("friction") if isinstance(decision.get("friction"), dict) else {}
+            m = re.search(r"uxg-\d+", target or "")
+            label = labels.get(m.group(0), target) if m else (target or "")
 
-            await queue.put({
-                "thought": f"Decided: {thought}",
-                "screenshot": base64_image
-            })
+            def record(ok: bool, url_after: str = "") -> None:
+                steps.append(Step(
+                    n=step + 1, url=url_before, url_after=url_after, action=action,
+                    label=label, ok=ok, thought=thought,
+                    friction_type=friction.get("type"), friction_note=friction.get("note", ""),
+                ))
+
+            await queue.put({"thought": f"{tag}Decided: {thought}"})
 
             if action == "done":
+                record(True)
                 await queue.put({
-                    "thought": "Task completed successfully.",
+                    "thought": f"{tag}Task completed successfully.",
                     "screenshot": base64_image
                 })
                 break
             elif action == "abort":
+                record(False)
                 await queue.put({
-                    "thought": "Aborting task due to friction or confusion.",
+                    "thought": f"{tag}Aborting task due to friction or confusion.",
                     "screenshot": base64_image
                 })
                 break
@@ -445,53 +491,55 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
                 else:
                     action_desc = f"Interacting with '{target}'"
 
-                await queue.put({
-                    "thought": f"Executing: {action_desc}",
-                    "screenshot": base64_image
-                })
+                shot = await screenshot_with_highlight(page, target) if action in ("click", "type") else base64_image
+                await queue.put({"thought": f"{tag}Executing: {action_desc}", "screenshot": shot})
 
                 success, err = await perform_action(page, action, target, value)
+                await settle(page)
+                record(success, page.url)
                 if success:
                     last_error = None
                     consecutive_errors = 0
-                    # Wait for navigation or reaction, then capture resulting screenshot
-                    await asyncio.sleep(1.5)
-                    after_bytes = await page.screenshot(type="jpeg", quality=50)
-                    after_base64 = base64.b64encode(after_bytes).decode('utf-8')
-                    await queue.put({
-                        "thought": f"Action completed: {action_desc}",
-                        "screenshot": after_base64
-                    })
+                    await queue.put({"thought": f"{tag}Action completed"})
                 else:
                     last_error = err
                     consecutive_errors += 1
-                    await queue.put({
-                        "thought": f"Friction encountered: {err}. Adapting strategy...",
-                        "screenshot": base64_image
-                    })
+                    await queue.put({"thought": f"{tag}Friction encountered: {err}. Adapting strategy..."})
                     if consecutive_errors >= 3:
                         await queue.put({
-                            "thought": "Aborting task: Repeated interaction failures encountered.",
+                            "thought": f"{tag}Aborting task: Repeated interaction failures encountered.",
                             "screenshot": base64_image
                         })
                         break
 
         except Exception as e:
             await queue.put({
-                "thought": f"Friction during agent decision: {str(e)[:160]}",
+                "thought": f"{tag}Friction during agent decision: {str(e)[:160]}",
                 "screenshot": base64_image
             })
             # If unexpected error occurred, continue loop unless repeated
             consecutive_errors += 1
             if consecutive_errors >= 3:
                 await queue.put({
-                    "thought": "Aborting task after repeated execution errors.",
+                    "thought": f"{tag}Aborting task after repeated execution errors.",
                     "screenshot": base64_image
                 })
                 break
             await asyncio.sleep(1.5)
             continue
 
+    completed = any(s.action == "done" for s in steps)
+    await queue.put({"thought": "Writing the Sabotage Report…"})
+    try:
+        report = await asyncio.to_thread(build_report, client, REPORT_MODEL, steps, completed, task, persona)
+    except Exception as e:
+        print(f"Report generation failed: {e}")
+        report = {"score": compute_friction(steps, completed),
+                  "verdict": "The narrative summary could not be generated; the score breakdown below is still accurate.",
+                  "findings": []}
+    report["bugs"] = sum(1 for s in steps if s.friction_type == "bug")
+    LAST_REPORT.clear()
+    LAST_REPORT.update(report)
     await queue.put({"thought": "Agent loop finished."})
     await queue.put({"done": True})
 
