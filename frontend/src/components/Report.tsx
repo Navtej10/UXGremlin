@@ -27,9 +27,47 @@ export function Report({ session, history, onRestart }: ReportProps) {
     setCurrentIndex((prev) => Math.min(history.length - 1, prev + 1));
   };
 
-  // Basic friction score calculation based on number of steps or aborts
-  const isAborted = history.some(item => item.thought.toLowerCase().includes('abort'));
-  const frictionScore = isAborted ? 95 : Math.min(100, history.length * 10);
+  // Precise outcome and friction score calculation
+  const hasCompleted = history.some(item =>
+    item.thought.toLowerCase().includes('completed successfully') ||
+    item.thought.toLowerCase().includes('task completed')
+  );
+  const hasAborted = history.some(item =>
+    item.thought.toLowerCase().includes('abort')
+  );
+  const hasError = history.some(item =>
+    item.thought.toLowerCase().includes('error during') ||
+    item.thought.toLowerCase().includes('fatal error') ||
+    item.thought.toLowerCase().includes('action failed')
+  );
+
+  const frictionCount = history.filter(item =>
+    item.thought.toLowerCase().includes('friction') ||
+    item.thought.toLowerCase().includes('failed') ||
+    item.thought.toLowerCase().includes('error')
+  ).length;
+
+  let frictionScore: number;
+  let statusText: string;
+  let scoreColor: string;
+
+  if (hasCompleted) {
+    frictionScore = Math.min(65, Math.max(15, (history.length * 4) + (frictionCount * 12)));
+    statusText = "Task completed successfully.";
+    scoreColor = frictionScore > 50 ? "text-amber-400" : "text-gremlin-green";
+  } else if (hasAborted) {
+    frictionScore = 95;
+    statusText = "Task aborted due to extreme friction.";
+    scoreColor = "text-red-500";
+  } else if (hasError) {
+    frictionScore = 90;
+    statusText = "Task failed due to UX blocking error.";
+    scoreColor = "text-red-500";
+  } else {
+    frictionScore = 80;
+    statusText = "Task incomplete: user hit step limit.";
+    scoreColor = "text-amber-500";
+  }
 
   const currentItem = history[currentIndex];
 
@@ -70,11 +108,11 @@ export function Report({ session, history, onRestart }: ReportProps) {
           
           <div className="mt-8 p-6 bg-black/40 border border-gray-800 rounded-lg text-center">
             <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-4">Friction Score</h2>
-            <div className={`text-6xl font-black ${frictionScore > 70 ? 'text-red-500' : 'text-gremlin-green'}`}>
+            <div className={`text-6xl font-black ${scoreColor}`}>
               {frictionScore}
             </div>
-            <p className="text-sm text-gray-500 mt-2">
-              {isAborted ? "Task aborted due to extreme friction." : "Task completed."}
+            <p className={`text-sm mt-2 font-medium ${hasCompleted ? 'text-gray-400' : 'text-red-400'}`}>
+              {statusText}
             </p>
           </div>
         </div>

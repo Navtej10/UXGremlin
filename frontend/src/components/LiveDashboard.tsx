@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef } from 'react';
 import { Terminal, Activity, MonitorPlay } from 'lucide-react';
 
-import { HistoryItem } from './Report';
+import { type HistoryItem } from './Report';
 
 interface LiveDashboardProps {
   session: {
@@ -16,38 +16,44 @@ export function LiveDashboard({ session, onComplete }: LiveDashboardProps) {
   const [thoughts, setThoughts] = useState<string[]>([]);
   const [currentScreenshot, setCurrentScreenshot] = useState<string | null>(null);
   const thoughtsEndRef = useRef<HTMLDivElement>(null);
-  
+
   // Ref to hold mutable history without triggering re-renders for every item if not needed,
   // though we do want to store it to pass to Report.
   const historyRef = useRef<HistoryItem[]>([]);
+  const lastScreenshotRef = useRef<string | null>(null);
 
   useEffect(() => {
     const eventSource = new EventSource('http://127.0.0.1:8000/api/stream');
-    
+
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
-      
+
+      if (data.screenshot) {
+        lastScreenshotRef.current = data.screenshot;
+        setCurrentScreenshot(data.screenshot);
+        // Backfill initial items that arrived before the first screenshot was taken
+        historyRef.current.forEach((item) => {
+          if (!item.screenshot) {
+            item.screenshot = data.screenshot;
+          }
+        });
+      }
+
       if (data.done) {
         eventSource.close();
         onComplete(historyRef.current);
         return;
       }
-      
-      if (data.thought || data.screenshot) {
-        historyRef.current = [
-          ...historyRef.current,
-          {
-            thought: data.thought || (historyRef.current.length > 0 ? historyRef.current[historyRef.current.length - 1].thought : ""),
-            screenshot: data.screenshot || null
-          }
-        ];
-      }
 
       if (data.thought) {
         setThoughts((prev) => [...prev, data.thought]);
-      }
-      if (data.screenshot) {
-        setCurrentScreenshot(data.screenshot);
+        historyRef.current = [
+          ...historyRef.current,
+          {
+            thought: data.thought,
+            screenshot: data.screenshot || lastScreenshotRef.current
+          }
+        ];
       }
     };
 
@@ -89,11 +95,11 @@ export function LiveDashboard({ session, onComplete }: LiveDashboardProps) {
             <MonitorPlay className="w-4 h-4" />
             Live Browser View
           </div>
-          
+
           <div className="flex-1 border border-gray-700/50 rounded-lg bg-black flex items-center justify-center overflow-hidden shadow-2xl relative">
             {/* Subtle scanline effect */}
             <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_4px,3px_100%] z-10 pointer-events-none opacity-20"></div>
-            
+
             {currentScreenshot ? (
               <img src={`data:image/jpeg;base64,${currentScreenshot}`} alt="Live Browser View" className="w-full h-full object-contain relative z-0" />
             ) : (

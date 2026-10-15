@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Launchpad } from './components/Launchpad';
 import { LiveDashboard } from './components/LiveDashboard';
-import { Report, HistoryItem } from './components/Report';
+import { Report, type HistoryItem } from './components/Report';
 
 function App() {
   const [session, setSession] = useState<{ url: string; task: string; persona: string } | null>(null);
