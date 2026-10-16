@@ -5,6 +5,7 @@ import { type HistoryItem } from './Report';
 
 interface LiveDashboardProps {
   session: {
+    session_id?: string;
     url: string;
     task: string;
     persona: string;
@@ -15,28 +16,47 @@ interface LiveDashboardProps {
 export function LiveDashboard({ session, onComplete }: LiveDashboardProps) {
   const [thoughts, setThoughts] = useState<string[]>([]);
   const [currentScreenshot, setCurrentScreenshot] = useState<string | null>(null);
+  const [isBaseline, setIsBaseline] = useState<boolean>(false);
   const thoughtsEndRef = useRef<HTMLDivElement>(null);
 
-  // Ref to hold mutable history without triggering re-renders for every item if not needed,
-  // though we do want to store it to pass to Report.
+  // Ref to hold clean step history as fallback for Report
   const historyRef = useRef<HistoryItem[]>([]);
   const lastScreenshotRef = useRef<string | null>(null);
 
   useEffect(() => {
-    const eventSource = new EventSource('http://127.0.0.1:8000/api/stream');
+    const streamUrl = session.session_id
+      ? `http://127.0.0.1:8000/api/stream?session_id=${encodeURIComponent(session.session_id)}`
+      : 'http://127.0.0.1:8000/api/stream';
+    const eventSource = new EventSource(streamUrl);
 
     eventSource.onmessage = (event) => {
       const data = JSON.parse(event.data);
 
+      if (data.phase === 'baseline' || (typeof data.thought === 'string' && data.thought.includes('Running baseline'))) {
+        setIsBaseline(true);
+      } else if (data.step || (typeof data.thought === 'string' && (data.thought.includes('Starting persona') || data.thought.includes('Initializing agent')))) {
+        setIsBaseline(false);
+      }
+
       if (data.screenshot) {
         lastScreenshotRef.current = data.screenshot;
         setCurrentScreenshot(data.screenshot);
-        // Backfill initial items that arrived before the first screenshot was taken
-        historyRef.current.forEach((item) => {
-          if (!item.screenshot) {
-            item.screenshot = data.screenshot;
+      }
+
+      if (data.thought) {
+        setThoughts((prev) => [...prev, data.thought]);
+      }
+
+      if (data.step) {
+        historyRef.current = [
+          ...historyRef.current,
+          {
+            step_number: data.step,
+            action: data.action,
+            thought: data.thought,
+            screenshot: data.screenshot || lastScreenshotRef.current,
           }
-        });
+        ];
       }
 
       if (data.done) {
@@ -44,24 +64,12 @@ export function LiveDashboard({ session, onComplete }: LiveDashboardProps) {
         onComplete(historyRef.current);
         return;
       }
-
-      if (data.thought) {
-        setThoughts((prev) => [...prev, data.thought]);
-        const isDecided = data.thought.includes('Decided:');
-        historyRef.current = [
-          ...historyRef.current,
-          {
-            thought: data.thought,
-            screenshot: data.screenshot || (isDecided ? null : lastScreenshotRef.current)
-          }
-        ];
-      }
     };
 
     return () => {
       eventSource.close();
     };
-  }, [onComplete]);
+  }, [onComplete, session.session_id]);
 
   useEffect(() => {
     thoughtsEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -72,10 +80,17 @@ export function LiveDashboard({ session, onComplete }: LiveDashboardProps) {
       {/* Top Bar */}
       <div className="h-14 border-b border-gray-800 flex items-center justify-between px-6 bg-bg-card shrink-0">
         <div className="flex items-center gap-4 text-sm">
-          <div className="flex items-center gap-2 text-gremlin-green">
-            <Activity className="w-4 h-4 animate-pulse" />
-            <span className="font-bold">ATTACK IN PROGRESS</span>
-          </div>
+          {isBaseline ? (
+            <div className="flex items-center gap-2 text-amber-400">
+              <Activity className="w-4 h-4 animate-spin" />
+              <span className="font-bold">CALIBRATING BASELINE</span>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 text-gremlin-green">
+              <Activity className="w-4 h-4 animate-pulse" />
+              <span className="font-bold">ATTACK IN PROGRESS</span>
+            </div>
+          )}
           <div className="h-4 w-px bg-gray-700"></div>
           <div className="text-gray-400">Target: <span className="text-white">{session.url}</span></div>
           <div className="text-gray-400">Task: <span className="text-white">{session.task}</span></div>

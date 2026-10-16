@@ -3,8 +3,16 @@ import { Launchpad } from './components/Launchpad';
 import { LiveDashboard } from './components/LiveDashboard';
 import { Report, type HistoryItem } from './components/Report';
 
+export interface SessionInfo {
+  session_id?: string;
+  url: string;
+  task: string;
+  persona: string;
+  baseline?: boolean;
+}
+
 function App() {
-  const [session, setSession] = useState<{ url: string; task: string; persona: string } | null>(null);
+  const [session, setSession] = useState<SessionInfo | null>(null);
   const [history, setHistory] = useState<HistoryItem[] | null>(null);
 
   const handleRestart = () => {

@@ -1,23 +1,25 @@
 import { useState } from 'react';
 import { Skull, Zap } from 'lucide-react';
 
-export function Launchpad({ onLaunch }: { onLaunch: (data: { url: string; task: string; persona: string }) => void }) {
+export function Launchpad({ onLaunch }: { onLaunch: (data: { session_id?: string; url: string; task: string; persona: string; baseline?: boolean }) => void }) {
   const [url, setUrl] = useState('');
   const [task, setTask] = useState('');
   const [persona, setPersona] = useState('pro_tester');
+  const [baseline, setBaseline] = useState(true);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log('Launch attack:', { url, task, persona });
+    console.log('Launch attack:', { url, task, persona, baseline });
     try {
       const response = await fetch('http://127.0.0.1:8000/api/launch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, task, persona }),
+        body: JSON.stringify({ url, task, persona, baseline }),
       });
       if (response.ok) {
-        console.log("Attack launched successfully!");
-        onLaunch({ url, task, persona });
+        const data = await response.json();
+        console.log("Attack launched successfully!", data);
+        onLaunch({ session_id: data.session_id, url, task, persona, baseline });
       } else {
         console.error("Failed to launch attack.");
       }
@@ -86,6 +88,24 @@ export function Launchpad({ onLaunch }: { onLaunch: (data: { url: string; task: 
                   Methodically audits buttons, layout integrity, form fields, and exposes UX bugs.
                 </p>
               )}
+            </div>
+
+            <div className="p-4 bg-bg-dark border border-gray-700/80 rounded-lg flex items-center justify-between">
+              <div>
+                <label htmlFor="baseline" className="text-sm font-semibold text-white block cursor-pointer">
+                  Run Baseline Calibration
+                </label>
+                <p className="text-xs text-gray-400 mt-0.5">
+                  Runs direct baseline agent first to calibrate expected steps (cached per task).
+                </p>
+              </div>
+              <input
+                id="baseline"
+                type="checkbox"
+                checked={baseline}
+                onChange={(e) => setBaseline(e.target.checked)}
+                className="w-5 h-5 accent-gremlin-purple rounded border-gray-700 bg-bg-dark cursor-pointer"
+              />
             </div>
 
             <button

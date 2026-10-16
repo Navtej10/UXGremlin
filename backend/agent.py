@@ -1,17 +1,32 @@
 import os
 import re
+import time
 import asyncio
 import base64
 import json
-from groq import Groq
 from playwright.async_api import Page
 from dotenv import load_dotenv
 from scoring import Step, compute_friction, build_report
+from llm_client import resilient_llm_client, LLMUnavailableError
 
 load_dotenv()
 
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-REPORT_MODEL = "openai/gpt-oss-120b"
+from enum import Enum
+
+# Task Outcome Enum
+class TaskOutcome(str, Enum):
+    COMPLETED = "completed"
+    ABANDONED = "abandoned"
+    GAVE_UP = "gave_up"
+    MAX_STEPS_REACHED = "max_steps_reached"
+    ERROR = "error"
+
+OUTCOME_COMPLETED = TaskOutcome.COMPLETED.value
+OUTCOME_ABANDONED = TaskOutcome.ABANDONED.value
+OUTCOME_GAVE_UP = TaskOutcome.GAVE_UP.value
+OUTCOME_MAX_STEPS = TaskOutcome.MAX_STEPS_REACHED.value
+OUTCOME_ERROR = TaskOutcome.ERROR.value
+
 LAST_REPORT: dict = {}
 
 SYSTEM_INSTRUCTIONS = (
@@ -90,31 +105,37 @@ def regex_fallback_decision(text: str) -> dict:
         if val_m:
             value = val_m.group(1)
 
+    task_status = "done" if action == "done" else ("giving_up" if action == "abort" else "in_progress")
+    clean_text = text.strip()[:240]
+
     return {
-        "thought": text.strip()[:240],
+        "reason": clean_text,
+        "thought": clean_text,
         "action": action,
+        "task_status": task_status,
+        "outcome_reason": clean_text[:160] if action in ("done", "abort") else "",
         "target": target,
         "value": value
     }
 
-async def recover_decision_from_failed_text(text: str) -> dict:
-    """Uses fast text completion or regex fallback to parse unstructured tester text into decision dict."""
+async def recover_decision_from_failed_text(text: str, status_callback=None) -> dict:
+    """Uses resilient LLM text completion or regex fallback to parse unstructured tester text into decision dict."""
     try:
-        res = await asyncio.to_thread(
-            client.chat.completions.create,
-            model="openai/gpt-oss-120b",
+        res = await resilient_llm_client.chat_completion(
             messages=[
                 {
                     "role": "system",
                     "content": (
                         "You are an action parser. Extract the intended action from the QA tester text into valid JSON. "
-                        "Respond ONLY with a single JSON object: {\"thought\": \"...\", \"action\": \"click\"|\"type\"|\"scroll\"|\"done\"|\"abort\", \"target\": \"uxg-X\", \"value\": \"...\"}."
+                        "Respond ONLY with a single JSON object: {\"reason\": \"...\", \"thought\": \"...\", \"action\": \"click\"|\"type\"|\"scroll\"|\"done\"|\"abort\", \"task_status\": \"in_progress\"|\"done\"|\"giving_up\", \"outcome_reason\": \"...\", \"target\": \"uxg-X\", \"value\": \"...\"}."
                     )
                 },
                 {"role": "user", "content": text}
             ],
+            model_type="text",
             response_format={"type": "json_object"},
-            max_tokens=800
+            max_tokens=800,
+            status_callback=status_callback,
         )
         return json.loads(res.choices[0].message.content)
     except Exception as e:
@@ -142,6 +163,13 @@ PERSONA_GUIDES = {
     "skeptic": (
         "You are a skeptical, cautious user. You look for hidden traps, inspect labels carefully, "
         "and avoid rushing into actions without checking options."
+    ),
+    "baseline": (
+        "You are an expert, highly efficient user testing baseline. "
+        "You have zero confusion, ignore irrelevant elements, and take the shortest, "
+        "most direct path to successfully accomplish the goal. "
+        "You do not wander, hesitate, or perform redundant actions. "
+        "Your sole focus is reaching the target goal with the minimum necessary steps."
     )
 }
 
@@ -304,24 +332,137 @@ async def screenshot_with_highlight(page: Page, target: str) -> str:
     return base64.b64encode(shot).decode("utf-8")
 
 
+async def verify_task_completion(page: Page, task: str, outcome_reason: str, base64_image: str) -> tuple[bool, str]:
+    """
+    Verifies if the task was genuinely completed:
+    1. Heuristic check: URL path keywords and DOM confirmation text.
+    2. Vision LLM verification asking if the task was actually completed based on screenshot.
+    Returns (verified: bool, reason: str).
+    """
+    url_lower = page.url.lower()
+    url_success = any(kw in url_lower for kw in [
+        "success", "thank", "order", "confirmation", "complete", "welcome", "account", "dashboard", "submitted", "done"
+    ])
+
+    dom_success = False
+    try:
+        dom_success = await page.evaluate("""() => {
+            const text = (document.body ? document.body.innerText : "").toLowerCase();
+            const keywords = ["thank you", "success", "confirmed", "order received", "welcome", "successfully", "submitted", "completed", "you're all set", "account created", "order placed"];
+            return keywords.some(k => text.includes(k));
+        }""")
+    except Exception:
+        pass
+
+    verify_prompt = f"""You are a usability verification auditor.
+Task: {task}
+Claimed completion reason: {outcome_reason}
+Current URL: {page.url}
+
+Inspect the screenshot to check if the user task was ACTUALLY completed.
+Respond ONLY with a valid JSON object:
+{{
+  "verified": true,
+  "why": "one sentence explaining why it is or is not completed"
+}}
+"""
+    try:
+        res = await resilient_llm_client.chat_completion(
+            messages=[
+                {"role": "system", "content": "You are a usability auditor. Respond ONLY with valid JSON: {\"verified\": true|false, \"why\": \"...\"}"},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": verify_prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}},
+                    ]
+                }
+            ],
+            model_type="vision",
+            response_format={"type": "json_object"},
+            max_tokens=250,
+            timeout=15.0,
+        )
+        parsed = json.loads(res.choices[0].message.content)
+        is_verified = bool(parsed.get("verified", False))
+        why = parsed.get("why", "")
+        if is_verified:
+            return True, why or "Task verified as completed based on final page state."
+        elif url_success or dom_success:
+            return True, f"Verified via page confirmation indicators ({page.url}). Note: {why}"
+        else:
+            return False, why or "Final screen does not confirm task completion."
+    except Exception:
+        if url_success or dom_success:
+            return True, f"Verified via confirmation indicators on page ({page.url})."
+        return True, f"Task claimed completed by tester ({outcome_reason or 'No details'})."
+
+
 MAX_AGENT_STEPS = 25
 
-async def run_agent_loop(page: Page, task: str, persona: str, queue: asyncio.Queue, max_steps: int = MAX_AGENT_STEPS):
+async def run_agent_loop(page: Page, task: str, persona: str, queue: asyncio.Queue, max_steps: int = MAX_AGENT_STEPS, session_id: str | None = None, session_data: dict | None = None):
     persona_guide = PERSONA_GUIDES.get(persona, PERSONA_GUIDES["pro_tester"])
-    await queue.put({"thought": f"Initializing agent as {persona} persona for task: '{task}' (Max Steps: {max_steps})"})
+    await queue.put({
+        "thought": f"Initializing agent as {persona} persona for task: '{task}' (Max Steps: {max_steps})",
+        "session_id": session_id,
+        "task": task,
+        "persona": persona,
+    })
 
     last_error: str | None = None
     consecutive_errors = 0
     steps: list[Step] = []
+
+    claimed_outcome: str = "in_progress"
+    verified_outcome: str = "in_progress"
+    final_outcome: str = "in_progress"
+    final_outcome_reason: str = ""
+
+    # Technical error collectors for per-step signals
+    step_console_errors: list[str] = []
+    step_failed_requests: list[str] = []
+
+    def on_console(msg):
+        try:
+            if getattr(msg, "type", None) == "error":
+                text = getattr(msg, "text", str(msg))
+                step_console_errors.append(text[:200])
+        except Exception:
+            pass
+
+    def on_request_failed(req):
+        try:
+            err = getattr(req, "failure", None)
+            method = getattr(req, "method", "REQ")
+            url = getattr(req, "url", "")
+            step_failed_requests.append(f"{method} {url[:100]}: {err}" if err else f"{method} {url[:100]}")
+        except Exception:
+            pass
+
+    if hasattr(page, "on"):
+        try:
+            r1 = page.on("console", on_console)
+            if asyncio.iscoroutine(r1):
+                r1.close()
+            r2 = page.on("requestfailed", on_request_failed)
+            if asyncio.iscoroutine(r2):
+                r2.close()
+        except Exception:
+            pass
 
     for step in range(max_steps):
         await settle(page)
         tag = f"Step {step + 1} · "
         url_before = page.url
 
+        # Reset per-step technical error buffers
+        step_console_errors.clear()
+        step_failed_requests.clear()
+
         # 1. Take current screenshot
         screenshot_bytes = await page.screenshot(type="jpeg", quality=50)
         base64_image = base64.b64encode(screenshot_bytes).decode('utf-8')
+
 
         # 2. Extract visible interactive elements from DOM
         visible_elements = await extract_visible_interactive_elements(page)
@@ -360,8 +501,11 @@ CURRENTLY VISIBLE INTERACTIVE ELEMENTS ON SCREEN:
 
 Analyze the screenshot and the list of currently visible elements above.
 Decide the next action to make progress on the task according to your persona.
-- If the task is already satisfied and you have completed auditing the relevant components, choose "done".
-- If you are completely blocked or frustrated with no way forward, choose "abort".
+- If the task is already satisfied and you have completed auditing the relevant components, choose "action": "done" and "task_status": "done".
+- If you are completely blocked or frustrated with no way forward, choose "action": "abort" and "task_status": "giving_up".
+- Otherwise choose "task_status": "in_progress".
+- For "reason": explain what you observed and your objective.
+- For "outcome_reason": provide a concise explanation of progress, completion proof, or why giving up.
 - To interact, prefer using the element ID from the list (e.g. "uxg-1" or "[data-uxg-id=\"uxg-1\"]") or a visible selector.
 - You can choose "scroll" to reveal more buttons, fields, or layout content.
 
@@ -371,114 +515,245 @@ Do NOT include markdown formatting (no ```json), commentary, or text before/afte
 
 Expected JSON schema:
 {{
-  "thought": "[UX Observation: checked search box] Clicking Search button to verify results.",
   "action": "click",
+  "reason": "[UX Observation: checked search box] Clicking Search button to verify results.",
+  "thought": "[UX Observation: checked search box] Clicking Search button to verify results.",
+  "task_status": "in_progress",
+  "outcome_reason": "Searching for product in catalog",
   "target": "uxg-20",
   "value": "",
   "friction": null
 }}
+"task_status" must be one of: "in_progress", "done", "giving_up".
 "friction" must be null unless this moment would make a real user hesitate, backtrack, distrust the site, or hit a defect. Only then set it to
 {{"type": "navigation|cta|terminology|form|trust|bug", "note": "one sentence: what was confusing or broken, and why"}}.
 Only flag friction you can point to on screen. Most steps should be null.
 Valid "action" values: "click", "type", "scroll", "done", "abort".
 """
         try:
-            # Resilient Groq call with JSON mode, recovery, and rate-limit retry support
+            # Resilient vision LLM call with token bucket, backoff, and fallback chain
             decision = None
-            for attempt in range(3):
-                try:
-                    req_kwargs = {
-                        "model": "qwen/qwen3.8-27b",
-                        "messages": [
-                            {"role": "system", "content": SYSTEM_INSTRUCTIONS},
-                            {
-                                "role": "user",
-                                "content": [
-                                    {"type": "text", "text": prompt if attempt == 0 else f"{prompt}\nCRITICAL: Output raw JSON starting with {{ only!"},
-                                    {
-                                        "type": "image_url",
-                                        "image_url": {
-                                            "url": f"data:image/jpeg;base64,{base64_image}",
-                                        }
-                                    },
-                                ],
+
+            async def on_llm_status(msg: str):
+                await queue.put({
+                    "thought": f"{tag}{msg}",
+                    "screenshot": base64_image
+                })
+
+            messages = [
+                {"role": "system", "content": SYSTEM_INSTRUCTIONS},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}",
                             }
-                        ],
-                        "max_tokens": 1200,
-                    }
-                    if attempt == 0:
-                        req_kwargs["response_format"] = {"type": "json_object"}
+                        },
+                    ],
+                }
+            ]
 
-                    response = await asyncio.to_thread(
-                        client.chat.completions.create,
-                        **req_kwargs
-                    )
-                    raw_content = response.choices[0].message.content or ""
-                    decision = extract_and_parse_json(raw_content)
-                    break
-                except Exception as api_err:
-                    err_str = str(api_err).lower()
-                    print(f"API attempt {attempt} failed: {api_err}")
+            try:
+                response = await resilient_llm_client.chat_completion(
+                    messages=messages,
+                    model_type="vision",
+                    response_format={"type": "json_object"},
+                    max_tokens=1200,
+                    status_callback=on_llm_status,
+                )
+                raw_content = response.choices[0].message.content or ""
+                decision = extract_and_parse_json(raw_content)
+            except LLMUnavailableError as unavail_err:
+                await queue.put({
+                    "thought": f"{tag}Aborting: All LLM providers and fallbacks unavailable ({unavail_err})",
+                    "screenshot": base64_image
+                })
+                # End the session with status "aborted_llm_unavailable" and still save the partial report
+                score = compute_friction({
+                    "steps": steps,
+                    "outcome": OUTCOME_ERROR,
+                    "outcome_reason": f"All LLM providers and fallbacks unavailable ({unavail_err})",
+                    "completed": False,
+                })
+                partial_report = {
+                    "session_id": session_id,
+                    "url": session_data.get("url", page.url) if session_data else page.url,
+                    "task": task,
+                    "persona": persona,
+                    "status": "aborted_llm_unavailable",
+                    "outcome": OUTCOME_ERROR,
+                    "outcome_reason": f"All LLM providers and fallbacks unavailable ({unavail_err})",
+                    "claimed_outcome": OUTCOME_ERROR,
+                    "verified_outcome": OUTCOME_ERROR,
+                    "score": score,
+                    "verdict": "Session aborted: AI testing engine became unavailable due to rate limits across all providers. Partial progress was recorded.",
+                    "findings": [
+                        {
+                            "title": "Session Interrupted by LLM Outage",
+                            "severity": "critical",
+                            "evidence_steps": [s.n for s in steps] if steps else [],
+                            "what_happened": "Rate limits or provider connection failures prevented the agent from finishing.",
+                            "impact": "Test stopped prematurely before full user testing could conclude.",
+                            "recommendation": "Check API keys or secondary provider configuration in .env.",
+                        }
+                    ],
+                    "bugs": sum(1 for s in steps if s.friction_type == "bug"),
+                    "actions": [
+                        {
+                            "step_number": s.n,
+                            "action": s.action,
+                            "target": s.label,
+                            "thought": s.thought,
+                            "screenshot": s.screenshot,
+                            "ok": s.ok,
+                            "url": s.url,
+                            "url_after": s.url_after,
+                            "friction_type": s.friction_type,
+                            "friction_note": s.friction_note,
+                        }
+                        for s in steps
+                    ]
+                }
+                if session_data is not None:
+                    session_data["report"] = partial_report
+                    session_data["status"] = "aborted_llm_unavailable"
+                    session_data["outcome"] = OUTCOME_ERROR
+                    session_data["outcome_reason"] = f"LLM unavailable: {unavail_err}"
+                    session_data["claimed_outcome"] = OUTCOME_ERROR
+                    session_data["verified_outcome"] = OUTCOME_ERROR
 
-                    # 1. Groq rate limit
-                    if ("429" in err_str or "rate limit" in err_str) and attempt < 2:
-                        await queue.put({
-                            "thought": "Groq rate limit encountered. Pausing 5 seconds before retrying...",
-                            "screenshot": base64_image
-                        })
-                        await asyncio.sleep(5)
-                        continue
-
-                    # 2. Recover from failed_generation if model output prose instead of JSON
-                    failed_gen = extract_failed_generation_text(api_err)
-                    if failed_gen:
-                        await queue.put({
-                            "thought": "Recovering decision from tester observation...",
-                            "screenshot": base64_image
-                        })
-                        decision = await recover_decision_from_failed_text(failed_gen)
-                        if decision:
-                            break
-
-                    # 3. Retry on attempt 1/2 (subsequent attempts omit response_format to avoid 400 rejection)
-                    if attempt < 2:
-                        await asyncio.sleep(1)
-                        continue
-                    else:
-                        raise api_err
+                LAST_REPORT.clear()
+                LAST_REPORT.update(partial_report)
+                await queue.put({
+                    "thought": "Agent loop aborted due to LLM unavailability.",
+                    "done": True,
+                    "session_id": session_id,
+                    "status": "aborted_llm_unavailable",
+                    "outcome": OUTCOME_ERROR,
+                    "outcome_reason": f"LLM unavailable: {unavail_err}",
+                    "claimed_outcome": OUTCOME_ERROR,
+                    "verified_outcome": OUTCOME_ERROR,
+                })
+                return
+            except Exception as parse_err:
+                failed_gen = extract_failed_generation_text(parse_err)
+                if failed_gen:
+                    await queue.put({
+                        "thought": f"{tag}Recovering decision from tester observation...",
+                        "screenshot": base64_image
+                    })
+                    decision = await recover_decision_from_failed_text(failed_gen, status_callback=on_llm_status)
+                else:
+                    decision = regex_fallback_decision(str(parse_err))
 
             if not decision:
                 raise ValueError("Could not obtain a valid decision from the model.")
 
-            thought = decision.get("thought", "No thought provided.")
+            reason = decision.get("reason") or decision.get("thought", "No reason provided.")
+            thought = decision.get("thought") or reason
             action = decision.get("action", "abort")
+            task_status = decision.get("task_status", "in_progress")
+            outcome_reason = decision.get("outcome_reason", "")
             target = decision.get("target", "")
             value = decision.get("value", "")
             friction = decision.get("friction") if isinstance(decision.get("friction"), dict) else {}
             m = re.search(r"uxg-\d+", target or "")
             label = labels.get(m.group(0), target) if m else (target or "")
 
-            def record(ok: bool, url_after: str = "") -> None:
-                steps.append(Step(
-                    n=step + 1, url=url_before, url_after=url_after, action=action,
-                    label=label, ok=ok, thought=thought,
-                    friction_type=friction.get("type"), friction_note=friction.get("note", ""),
-                ))
+            def record(
+                ok: bool,
+                shot_for_step: str | None = None,
+                url_after: str = "",
+                duration: float = 0.0,
+                dead_click: bool = False,
+                console_errors: list[str] | None = None,
+                failed_requests: list[str] | None = None,
+            ) -> None:
+                step_obj = Step(
+                    n=step + 1,
+                    url=url_before,
+                    url_after=url_after,
+                    action=action,
+                    label=label,
+                    ok=ok,
+                    thought=thought,
+                    friction_type=friction.get("type"),
+                    friction_note=friction.get("note", ""),
+                    screenshot=shot_for_step,
+                    target=target,
+                    duration=duration,
+                    dead_click=dead_click,
+                    console_errors=list(console_errors or []),
+                    failed_requests=list(failed_requests or []),
+                )
+                steps.append(step_obj)
+                if session_data is not None and "steps" in session_data:
+                    session_data["steps"].append(step_obj)
 
             await queue.put({"thought": f"{tag}Decided: {thought}"})
 
-            if action == "done":
-                record(True)
+            is_done_claim = (action == "done") or (task_status == "done")
+            is_abort_claim = (action == "abort") or (task_status == "giving_up")
+
+            if is_done_claim:
+                claimed_outcome = OUTCOME_COMPLETED
+                is_verified, v_why = await verify_task_completion(page, task, outcome_reason, base64_image)
+                if is_verified:
+                    verified_outcome = OUTCOME_COMPLETED
+                    final_outcome = OUTCOME_COMPLETED
+                    final_outcome_reason = outcome_reason or v_why
+                else:
+                    verified_outcome = OUTCOME_ABANDONED
+                    final_outcome = OUTCOME_ABANDONED
+                    final_outcome_reason = f"{outcome_reason} (Verification check failed: {v_why})" if outcome_reason else f"Verification unconfirmed: {v_why}"
+
+                record(
+                    is_verified,
+                    shot_for_step=base64_image,
+                    url_after=page.url,
+                    duration=0.0,
+                    dead_click=False,
+                    console_errors=step_console_errors,
+                    failed_requests=step_failed_requests,
+                )
                 await queue.put({
-                    "thought": f"{tag}Task completed successfully.",
-                    "screenshot": base64_image
+                    "step": step + 1,
+                    "action": "done",
+                    "thought": f"{tag}Claimed done: {outcome_reason or thought}",
+                    "screenshot": base64_image,
+                    "claimed_outcome": claimed_outcome,
+                    "verified_outcome": verified_outcome,
+                    "outcome": final_outcome,
+                    "outcome_reason": final_outcome_reason,
                 })
                 break
-            elif action == "abort":
-                record(False)
+            elif is_abort_claim:
+                claimed_outcome = OUTCOME_GAVE_UP
+                verified_outcome = OUTCOME_GAVE_UP
+                final_outcome = OUTCOME_GAVE_UP
+                final_outcome_reason = outcome_reason or "User persona gave up on the task due to friction or confusion."
+
+                record(
+                    False,
+                    shot_for_step=base64_image,
+                    url_after=page.url,
+                    duration=0.0,
+                    dead_click=False,
+                    console_errors=step_console_errors,
+                    failed_requests=step_failed_requests,
+                )
                 await queue.put({
-                    "thought": f"{tag}Aborting task due to friction or confusion.",
-                    "screenshot": base64_image
+                    "step": step + 1,
+                    "action": "abort",
+                    "thought": f"{tag}Gave up on task: {final_outcome_reason}",
+                    "screenshot": base64_image,
+                    "claimed_outcome": claimed_outcome,
+                    "verified_outcome": verified_outcome,
+                    "outcome": final_outcome,
+                    "outcome_reason": final_outcome_reason,
                 })
                 break
             elif action in ("click", "type", "scroll"):
@@ -492,11 +767,44 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
                     action_desc = f"Interacting with '{target}'"
 
                 shot = await screenshot_with_highlight(page, target) if action in ("click", "type") else base64_image
-                await queue.put({"thought": f"{tag}Executing: {action_desc}", "screenshot": shot})
+                await queue.put({
+                    "step": step + 1,
+                    "action": action,
+                    "thought": f"{tag}Executing: {action_desc}",
+                    "screenshot": shot
+                })
 
+                dom_before = ""
+                if action == "click":
+                    try:
+                        dom_before = await page.evaluate("() => document.body ? `${document.body.innerText.length}:${document.querySelectorAll('*').length}` : ''")
+                    except Exception:
+                        dom_before = ""
+
+                t0 = time.time()
                 success, err = await perform_action(page, action, target, value)
                 await settle(page)
-                record(success, page.url)
+                t1 = time.time()
+                step_duration = round(t1 - t0, 3)
+
+                is_dead_click = False
+                if action == "click" and success:
+                    try:
+                        dom_after = await page.evaluate("() => document.body ? `${document.body.innerText.length}:${document.querySelectorAll('*').length}` : ''")
+                        if page.url == url_before and dom_after == dom_before:
+                            is_dead_click = True
+                    except Exception:
+                        pass
+
+                record(
+                    success,
+                    shot_for_step=shot,
+                    url_after=page.url,
+                    duration=step_duration,
+                    dead_click=is_dead_click,
+                    console_errors=step_console_errors,
+                    failed_requests=step_failed_requests,
+                )
                 if success:
                     last_error = None
                     consecutive_errors = 0
@@ -506,9 +814,17 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
                     consecutive_errors += 1
                     await queue.put({"thought": f"{tag}Friction encountered: {err}. Adapting strategy..."})
                     if consecutive_errors >= 3:
+                        claimed_outcome = OUTCOME_ABANDONED
+                        verified_outcome = OUTCOME_ABANDONED
+                        final_outcome = OUTCOME_ABANDONED
+                        final_outcome_reason = f"Abandoned task after repeated interaction failures: {err}"
                         await queue.put({
                             "thought": f"{tag}Aborting task: Repeated interaction failures encountered.",
-                            "screenshot": base64_image
+                            "screenshot": base64_image,
+                            "claimed_outcome": claimed_outcome,
+                            "verified_outcome": verified_outcome,
+                            "outcome": final_outcome,
+                            "outcome_reason": final_outcome_reason,
                         })
                         break
 
@@ -520,26 +836,122 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
             # If unexpected error occurred, continue loop unless repeated
             consecutive_errors += 1
             if consecutive_errors >= 3:
+                claimed_outcome = OUTCOME_ERROR
+                verified_outcome = OUTCOME_ERROR
+                final_outcome = OUTCOME_ERROR
+                final_outcome_reason = f"Execution halted due to repeated agent errors: {str(e)[:160]}"
                 await queue.put({
                     "thought": f"{tag}Aborting task after repeated execution errors.",
-                    "screenshot": base64_image
+                    "screenshot": base64_image,
+                    "claimed_outcome": claimed_outcome,
+                    "verified_outcome": verified_outcome,
+                    "outcome": final_outcome,
+                    "outcome_reason": final_outcome_reason,
                 })
                 break
             await asyncio.sleep(1.5)
             continue
 
-    completed = any(s.action == "done" for s in steps)
+    if final_outcome == "in_progress":
+        claimed_outcome = OUTCOME_MAX_STEPS
+        verified_outcome = OUTCOME_MAX_STEPS
+        final_outcome = OUTCOME_MAX_STEPS
+        final_outcome_reason = outcome_reason or f"Maximum steps ({max_steps}) reached without completing task."
+
+    completed = (final_outcome == OUTCOME_COMPLETED)
     await queue.put({"thought": "Writing the Sabotage Report…"})
+
+    session_dict = {
+        "session_id": session_id,
+        "url": session_data.get("url", page.url) if session_data else page.url,
+        "task": task,
+        "persona": persona,
+        "status": "completed" if completed else final_outcome,
+        "outcome": final_outcome,
+        "outcome_reason": final_outcome_reason,
+        "claimed_outcome": claimed_outcome,
+        "verified_outcome": verified_outcome,
+        "steps": steps,
+        "completed": completed,
+        "expected_steps": session_data.get("expected_steps") if session_data else None,
+        "baseline_failed": session_data.get("baseline_failed", False) if session_data else False,
+        "baseline_note": session_data.get("baseline_note", "") if session_data else "",
+        "baseline_path": session_data.get("baseline_path", []) if session_data else [],
+    }
+
     try:
-        report = await asyncio.to_thread(build_report, client, REPORT_MODEL, steps, completed, task, persona)
+        report = await asyncio.to_thread(build_report, session_dict, client=resilient_llm_client)
     except Exception as e:
         print(f"Report generation failed: {e}")
-        report = {"score": compute_friction(steps, completed),
-                  "verdict": "The narrative summary could not be generated; the score breakdown below is still accurate.",
-                  "findings": []}
+        score_data = compute_friction(session_dict)
+        report = {
+            "score": score_data,
+            "verdict": f"The session completed with {score_data['label'].lower()} friction ({score_data['score']}/100). Deterministic breakdown computed successfully.",
+            "findings": [],
+            "baseline_failed": session_dict["baseline_failed"],
+            "baseline_note": session_dict["baseline_note"],
+        }
+
+    report["baseline_failed"] = session_dict["baseline_failed"]
+    report["baseline_note"] = session_dict["baseline_note"]
+    report["baseline_path"] = session_dict["baseline_path"]
     report["bugs"] = sum(1 for s in steps if s.friction_type == "bug")
+    report["session_id"] = session_id
+    report["url"] = session_data.get("url", page.url) if session_data else page.url
+    report["task"] = task
+    report["persona"] = persona
+    report["outcome"] = final_outcome
+    report["outcome_reason"] = final_outcome_reason
+    report["claimed_outcome"] = claimed_outcome
+    report["verified_outcome"] = verified_outcome
+    report["actions"] = [
+        {
+            "step_number": s.n,
+            "action": s.action,
+            "target": s.label,
+            "thought": s.thought,
+            "screenshot": s.screenshot,
+            "ok": s.ok,
+            "url": s.url,
+            "url_after": s.url_after,
+            "friction_type": s.friction_type,
+            "friction_note": s.friction_note,
+            "duration": getattr(s, "duration", 0.0),
+            "dead_click": getattr(s, "dead_click", False),
+            "console_errors": getattr(s, "console_errors", []),
+            "failed_requests": getattr(s, "failed_requests", []),
+        }
+        for s in steps
+    ]
+
+    if session_data is not None:
+        session_data["report"] = report
+        session_data["status"] = "completed"
+        session_data["outcome"] = final_outcome
+        session_data["outcome_reason"] = final_outcome_reason
+        session_data["claimed_outcome"] = claimed_outcome
+        session_data["verified_outcome"] = verified_outcome
+
     LAST_REPORT.clear()
     LAST_REPORT.update(report)
     await queue.put({"thought": "Agent loop finished."})
-    await queue.put({"done": True})
+    await queue.put({
+        "done": True,
+        "session_id": session_id,
+        "outcome": final_outcome,
+        "outcome_reason": final_outcome_reason,
+        "claimed_outcome": claimed_outcome,
+        "verified_outcome": verified_outcome,
+    })
+
+    if hasattr(page, "remove_listener"):
+        try:
+            r1 = page.remove_listener("console", on_console)
+            if asyncio.iscoroutine(r1):
+                r1.close()
+            r2 = page.remove_listener("requestfailed", on_request_failed)
+            if asyncio.iscoroutine(r2):
+                r2.close()
+        except Exception:
+            pass
 

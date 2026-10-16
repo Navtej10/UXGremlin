@@ -1,0 +1,16 @@
+{
+  "https://cachetest.com/item||purchase item": {
+    "url": "https://cachetest.com/item",
+    "task": "purchase item",
+    "expected_steps": 4,
+    "path": [
+      {
+        "step": 1,
+        "action": "click"
+      }
+    ],
+    "completed": true,
+    "error": "",
+    "timestamp": 1792132120.6948504
+  }
+}

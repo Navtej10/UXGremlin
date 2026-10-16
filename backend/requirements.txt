@@ -4,3 +4,4 @@ playwright
 pydantic
 groq
 python-dotenv
+pytest

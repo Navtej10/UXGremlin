@@ -5,3 +5,5 @@
 run_commands.txt
 __pycache__/
 *.pyc
+venv/
+.pytest_cache/
