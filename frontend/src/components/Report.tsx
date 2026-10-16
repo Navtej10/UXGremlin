@@ -9,6 +9,11 @@ import {
   Printer,
   RotateCcw,
   Check,
+  ArrowRight,
+  FileText,
+  ExternalLink,
+  AlertTriangle,
+  Activity,
 } from 'lucide-react';
 import { ComparisonSummary, type ComparisonItem } from './ComparisonSummary';
 import { BeforeAfterPanel, type ReportDelta } from './BeforeAfterPanel';
@@ -68,7 +73,12 @@ export interface SabotageReport {
   comparison?: Record<string, ComparisonItem>;
   comparison_summary?: ComparisonItem[];
   persona_reports?: Record<string, SabotageReport>;
-  outcome?: 'completed' | 'abandoned' | 'gave_up' | 'max_steps_reached' | 'error';
+  status?: string;
+  error?: string;
+  error_at_beginning?: boolean;
+  prompt_rerun?: boolean;
+  rerun_prompt?: string;
+  outcome?: 'completed' | 'abandoned' | 'gave_up' | 'max_steps_reached' | 'error' | 'timeout' | 'system_error';
   outcome_reason?: string;
   claimed_outcome?: string;
   verified_outcome?: string;
@@ -165,7 +175,23 @@ const OUTCOME_CONFIG: Record<
     text: 'text-rose-400',
     dot: 'bg-rose-400',
   },
+  timeout: {
+    label: 'Audit Timeout (System Cap)',
+    bg: 'bg-amber-950/60',
+    border: 'border-amber-500/50',
+    text: 'text-amber-400',
+    dot: 'bg-amber-400',
+  },
+  system_error: {
+    label: 'System Error (Interrupted)',
+    bg: 'bg-purple-950/60',
+    border: 'border-purple-500/50',
+    text: 'text-purple-400',
+    dot: 'bg-purple-400',
+  },
 };
+
+export type ReportViewMode = 'score' | 'explanation' | 'run';
 
 export function Report({
   session,
@@ -175,6 +201,7 @@ export function Report({
   onRestart,
   onReRun,
 }: ReportProps) {
+  const [viewMode, setViewMode] = useState<ReportViewMode>('score');
   const [currentIndex, setCurrentIndex] = useState(0);
   const [report, setReport] = useState<SabotageReport | null>(initialReport || null);
   const [copiedShare, setCopiedShare] = useState(false);
@@ -213,7 +240,7 @@ export function Report({
   };
 
   useEffect(() => {
-    if (initialReport && initialReport.score) {
+    if (initialReport && (initialReport.score || initialReport.error_at_beginning)) {
       return;
     }
 
@@ -227,7 +254,7 @@ export function Report({
       try {
         const res = await fetch(reportUrl);
         const data = await res.json();
-        if (data?.score || data?.comparison) {
+        if (data?.score || data?.comparison || data?.error_at_beginning) {
           if (!cancelled) {
             setReport(data as SabotageReport);
             if (data.personas && data.personas.length > 0) {
@@ -272,6 +299,7 @@ export function Report({
       const idx = activeReport.actions.findIndex((a) => a.step_number === n);
       if (idx >= 0) {
         setCurrentIndex(idx);
+        setViewMode('run');
         return;
       }
     }
@@ -279,8 +307,42 @@ export function Report({
     const exec = history.findIndex((h) => h.thought.startsWith(`${prefix}Executing`));
     const any = history.findIndex((h) => h.thought.startsWith(prefix));
     const i = exec >= 0 ? exec : any;
-    if (i >= 0) setCurrentIndex(i);
+    if (i >= 0) {
+      setCurrentIndex(i);
+    } else {
+      setCurrentIndex(Math.max(0, Math.min(totalSteps - 1, n - 1)));
+    }
+    setViewMode('run');
   };
+
+  const handleViewRun = (personaId?: string) => {
+    if (personaId) {
+      setSelectedPersona(personaId);
+    }
+    setCurrentIndex(0);
+    setViewMode('run');
+  };
+
+  const handleViewExplanation = (personaId?: string) => {
+    if (personaId) {
+      setSelectedPersona(personaId);
+    }
+    setViewMode('explanation');
+  };
+
+  // Keyboard navigation for step replay
+  useEffect(() => {
+    if (viewMode !== 'run') return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowLeft') {
+        setCurrentIndex((prev) => Math.max(0, prev - 1));
+      } else if (e.key === 'ArrowRight') {
+        setCurrentIndex((prev) => Math.min(Math.max(0, totalSteps - 1), prev + 1));
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [viewMode, totalSteps]);
 
   const currentScore = activeReport?.score || report?.score;
   const total = currentScore?.total ?? 0;
@@ -311,13 +373,67 @@ export function Report({
       ? activeReport.findings
       : report?.findings || [];
 
+  const isErrorAtBeginning = Boolean(
+    report?.error_at_beginning ||
+    activeReport?.error_at_beginning ||
+    report?.status === 'error_at_beginning' ||
+    activeReport?.status === 'error_at_beginning' ||
+    ((outcome === 'error' || report?.outcome === 'error') && totalSteps === 0 && (report?.error || activeReport?.error || outcomeReason))
+  );
+
+  const initialErrorMessage =
+    report?.error ||
+    activeReport?.error ||
+    outcomeReason ||
+    'The target application could not be reached or an error occurred before testing could start.';
+
+  const initialRerunPrompt =
+    report?.rerun_prompt ||
+    activeReport?.rerun_prompt ||
+    `The test could not start due to an error: ${initialErrorMessage}. Please verify that the target URL is accessible and rerun the test.`;
+
+  const isSystemInterrupted = Boolean(
+    outcome === 'timeout' ||
+    outcome === 'system_error' ||
+    activeReport?.outcome === 'timeout' ||
+    activeReport?.outcome === 'system_error'
+  );
+
+  const triggerRerun = () => {
+    const targetSessionId = report?.session_id || session.session_id || '';
+    if (onReRun) {
+      onReRun({
+        url: report?.url || session.url,
+        task: report?.task || session.task,
+        persona: selectedPersona || session.persona,
+        personas: report?.personas || session.personas,
+        previous_session_id: targetSessionId,
+      });
+    } else {
+      onRestart();
+    }
+  };
+
+  // Fallback ComparisonItem in case backend didn't supply comparison_summary
+  const fallbackComparisonItem: ComparisonItem = {
+    persona: selectedPersona || session.persona || 'pro_tester',
+    score: currentScore?.total ?? 0,
+    outcome: outcome || 'completed',
+    steps: totalSteps || currentScore?.steps_taken || 0,
+    top_finding: currentFindings[0]?.title || 'No critical issues identified',
+  };
+
   return (
-    <div className="h-screen w-screen flex flex-col bg-bg-dark text-white">
-      {/* Header */}
-      <div className="h-16 border-b border-gray-800 flex items-center justify-between px-6 bg-bg-card shrink-0 gap-4">
+    <div className="h-screen w-screen flex flex-col bg-bg-dark text-white overflow-hidden">
+      {/* Universal Top Header */}
+      <div className="h-16 border-b border-gray-800 flex items-center justify-between px-6 bg-bg-card shrink-0 gap-4 z-20">
         <div className="flex items-center gap-3">
-          <ShieldAlert className="text-gremlin-purple w-6 h-6" />
-          <h1 className="text-xl font-bold uppercase tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-gremlin-purple to-gremlin-green">
+          <ShieldAlert className="text-gremlin-purple w-6 h-6 shrink-0" />
+          <h1
+            onClick={() => setViewMode('score')}
+            className="text-xl font-bold uppercase tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-gremlin-purple to-gremlin-green cursor-pointer select-none"
+            title="Return to Usability Score overview"
+          >
             Sabotage Report
           </h1>
           {isReadOnly && (
@@ -400,318 +516,712 @@ export function Report({
         </div>
       </div>
 
-      {/* Before / After Delta Panel if this was a Re-test */}
-      {report?.delta && (
-        <div className="border-b border-gray-800 bg-black/60 px-8 py-4 shrink-0 max-h-96 overflow-y-auto">
-          <BeforeAfterPanel delta={report.delta} />
-        </div>
-      )}
-
-      {/* Comparison Summary at top of Report */}
-      {(report?.comparison ||
-        report?.comparison_summary ||
-        (session.personas && session.personas.length > 1)) && (
-        <div className="border-b border-gray-800 bg-black/50 px-8 py-5 shrink-0 max-h-80 overflow-y-auto">
-          <ComparisonSummary
-            comparison={report?.comparison}
-            comparisonSummary={report?.comparison_summary}
-            selectedPersona={selectedPersona}
-            onSelectPersona={(p) => {
-              setSelectedPersona(p);
-              setCurrentIndex(0);
-            }}
-          />
-        </div>
-      )}
-
-      <div className="flex-1 flex overflow-hidden">
-        {/* Left Side: Summary */}
-        <div className="w-1/3 border-r border-gray-800 p-8 flex flex-col gap-6 overflow-y-auto">
-          {outcome && (
-            <div
-              className={`p-4 rounded-xl border ${
-                OUTCOME_CONFIG[outcome]?.bg ?? 'bg-gray-800/60'
-              } ${
-                OUTCOME_CONFIG[outcome]?.border ?? 'border-gray-700'
-              } shadow-lg flex flex-col gap-2.5`}
-            >
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] uppercase tracking-wider text-gray-400 font-bold">
-                  Task Outcome ({PERSONA_NAMES[selectedPersona]?.split(' ')[0] || selectedPersona})
-                </span>
-                {claimedOutcome &&
-                  verifiedOutcome &&
-                  claimedOutcome !== verifiedOutcome && (
-                    <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-black/60 text-amber-300 border border-amber-500/30">
-                      Claimed: {claimedOutcome} · Verified: {verifiedOutcome}
-                    </span>
-                  )}
-              </div>
-              <div className="flex items-center gap-2.5">
-                <span
-                  className={`w-3 h-3 rounded-full ${
-                    OUTCOME_CONFIG[outcome]?.dot ?? 'bg-gray-400'
-                  } animate-pulse`}
-                />
-                <span
-                  className={`text-lg font-extrabold tracking-wide uppercase ${
-                    OUTCOME_CONFIG[outcome]?.text ?? 'text-white'
-                  }`}
-                >
-                  {OUTCOME_CONFIG[outcome]?.label ?? outcome}
-                </span>
-              </div>
-              {outcomeReason && (
-                <p className="text-xs text-gray-300 leading-relaxed pl-3 border-l-2 border-white/20 mt-0.5">
-                  {outcomeReason}
-                </p>
-              )}
-            </div>
-          )}
-
-          {(activeReport?.baseline_failed || report?.baseline_failed) && (
-            <div className="p-4 rounded-xl border border-amber-500/50 bg-amber-950/40 text-amber-300 text-xs flex items-start gap-3 shadow-lg">
-              <ShieldAlert className="w-5 h-5 shrink-0 text-amber-400 mt-0.5" />
-              <div>
-                <span className="font-bold uppercase tracking-wider block text-[11px] text-amber-400 mb-0.5">
-                  Baseline Warning
-                </span>
-                <span>
-                  Task may be unreachable or unclear: direct baseline agent failed to achieve completion. Friction score fell back to heuristic step budget.
-                </span>
-              </div>
-            </div>
-          )}
-
-          <div>
-            <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-2">Target</h2>
-            <p className="font-mono text-lg">{activeReport?.url || report?.url || session.url}</p>
-          </div>
-          <div>
-            <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-2">Task</h2>
-            <p className="text-lg">{activeReport?.task || report?.task || session.task}</p>
-          </div>
-          <div>
-            <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-2">Persona</h2>
-            <div className="flex items-center gap-2">
-              <p className="text-lg text-gremlin-purple font-semibold">
-                {PERSONA_NAMES[selectedPersona] || selectedPersona}
-              </p>
-              {session.personas && session.personas.length > 1 && (
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-gremlin-purple/20 text-purple-200 border border-gremlin-purple/40">
-                  Compare View
-                </span>
-              )}
-            </div>
-            {session.personas && session.personas.length > 1 && (
-              <div className="flex flex-wrap gap-1.5 mt-2">
-                {session.personas.map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => {
-                      setSelectedPersona(p);
-                      setCurrentIndex(0);
-                    }}
-                    className={`px-2.5 py-1 rounded text-xs font-semibold border transition-all cursor-pointer ${
-                      selectedPersona === p
-                        ? 'bg-gremlin-purple text-white border-gremlin-purple shadow-sm'
-                        : 'bg-black/40 text-gray-400 border-gray-800 hover:border-gray-700 hover:text-white'
-                    }`}
-                  >
-                    {PERSONA_NAMES[p]?.split(' ')[0] || p}
-                  </button>
-                ))}
+      {/* ========================================================================= */}
+      {/* PAGE 1: THE SCORE OVERVIEW (1)                                            */}
+      {/* (Part 2 is accessible via button; Part 3 is accessed only via 'View Run') */}
+      {/* ========================================================================= */}
+      {viewMode === 'score' && (
+        <div className="flex-1 overflow-y-auto p-6 md:p-8 bg-bg-dark">
+          <div className="max-w-5xl mx-auto flex flex-col gap-6">
+            {/* Before / After Delta Panel if this was a Re-test */}
+            {report?.delta && (
+              <div className="border border-gray-800 bg-black/60 rounded-2xl p-5 shadow-lg">
+                <BeforeAfterPanel delta={report.delta} />
               </div>
             )}
+
+            {/* Target and Task Hero Strip */}
+            <div className="p-4 rounded-xl bg-black/40 border border-gray-800 flex flex-col md:flex-row md:items-center justify-between gap-4 text-xs">
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-gray-400 font-bold uppercase tracking-wider shrink-0">Target:</span>
+                <a
+                  href={activeReport?.url || report?.url || session.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-mono text-gremlin-green hover:underline flex items-center gap-1 text-sm font-semibold truncate"
+                >
+                  <span className="truncate">{activeReport?.url || report?.url || session.url}</span>
+                  <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                </a>
+              </div>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-gray-400 font-bold uppercase tracking-wider shrink-0">Task:</span>
+                <span className="text-gray-200 text-sm italic font-medium truncate">
+                  "{activeReport?.task || report?.task || session.task}"
+                </span>
+              </div>
+            </div>
+
+            {/* Error at Beginning Banner & Prompt to Rerun */}
+            {isErrorAtBeginning && (
+              <div className="p-6 rounded-2xl border border-rose-500/50 bg-gradient-to-br from-rose-950/70 via-black/90 to-bg-card shadow-[0_0_35px_rgba(244,63,94,0.18)] flex flex-col gap-4">
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-rose-950/90 border border-rose-500/60 flex items-center justify-center text-rose-400 shrink-0 shadow-lg">
+                    <AlertTriangle className="w-6 h-6 animate-pulse" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs uppercase font-extrabold tracking-wider px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                        Audit Failed at Start
+                      </span>
+                      <span className="text-xs text-gray-400 font-mono">0 steps executed</span>
+                    </div>
+                    <h3 className="text-lg font-bold text-white mt-1">
+                      Unable to Start Usability Test
+                    </h3>
+                    <p className="text-xs text-gray-300 mt-1 leading-relaxed">
+                      {initialRerunPrompt}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Stated Error Box */}
+                <div className="p-4 rounded-xl bg-black/90 border border-rose-500/30 font-mono text-xs text-rose-300 space-y-1">
+                  <div className="text-[10px] uppercase font-bold text-gray-400 font-sans tracking-wider">
+                    Stated Error Details
+                  </div>
+                  <div className="break-all">{initialErrorMessage}</div>
+                </div>
+
+                {/* Prompt to Rerun Actions */}
+                <div className="flex flex-wrap items-center gap-3 pt-1">
+                  <button
+                    onClick={triggerRerun}
+                    className="px-5 py-2.5 bg-gradient-to-r from-gremlin-purple to-purple-600 hover:from-purple-600 hover:to-gremlin-purple text-white text-xs font-bold rounded-xl shadow-lg transition-all flex items-center gap-2 cursor-pointer"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    <span>Rerun Test Now</span>
+                  </button>
+
+                  <button
+                    onClick={onRestart}
+                    className="px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-semibold rounded-xl border border-gray-700 transition cursor-pointer"
+                  >
+                    Configure Different Target / Task
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* System Interrupted Banner (Timeout / System Error) */}
+            {isSystemInterrupted && (
+              <div className="p-4 rounded-xl border border-amber-500/40 bg-amber-950/30 text-amber-300 text-xs flex items-start gap-3 shadow-lg">
+                <Activity className="w-5 h-5 shrink-0 text-amber-400 mt-0.5" />
+                <div>
+                  <span className="font-bold uppercase tracking-wider block text-[11px] text-amber-400 mb-0.5">
+                    Audit Interrupted ({outcome === 'timeout' ? 'System Timeout Limit' : 'Infrastructure Error'}) · Usability Score Up to Step {totalSteps}
+                  </span>
+                  <span className="text-gray-300">
+                    Testing concluded early at step {totalSteps} due to an infrastructure {outcome === 'timeout' ? 'timeout cap' : 'error'}. Usability friction ({currentScore?.total ?? 0}/100) is scored strictly based on heuristic findings and signals detected up to this point without penalizing the target application with a task failure penalty.
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* The Score Summary Cards (1) */}
+            <ComparisonSummary
+              comparison={report?.comparison}
+              comparisonSummary={report?.comparison_summary}
+              selectedPersona={selectedPersona}
+              onSelectPersona={(p) => {
+                setSelectedPersona(p);
+              }}
+              onViewRun={handleViewRun}
+              fallbackItem={fallbackComparisonItem}
+            />
+
+            {/* Action Card to Proceed to (2): Score & Explanation */}
+            <div className="w-full bg-gradient-to-r from-purple-950/40 via-bg-card to-gray-900 border border-gremlin-purple/30 rounded-2xl p-6 flex flex-col sm:flex-row items-center justify-between gap-5 shadow-[0_0_30px_rgba(157,0,255,0.1)]">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-xl bg-gremlin-purple/20 border border-gremlin-purple/40 flex items-center justify-center text-gremlin-green shrink-0">
+                  <FileText className="w-6 h-6" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    Detailed Score Breakdown & Explanation
+                  </h3>
+                  <p className="text-xs text-gray-400 mt-1 max-w-xl leading-relaxed">
+                    Explore the heuristic friction penalty breakdown, cognitive friction drivers, verified task outcomes, and prioritized usability findings with suggested code fixes.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-3 w-full sm:w-auto shrink-0">
+                <button
+                  onClick={() => handleViewExplanation(selectedPersona)}
+                  className="w-full sm:w-auto px-5 py-2.5 bg-gradient-to-r from-gremlin-purple to-purple-600 hover:from-purple-600 hover:to-gremlin-purple text-white text-xs font-bold rounded-xl shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <span>View Score & Explanation</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
           </div>
-          
-          <div className="mt-8 p-6 bg-black/40 border border-gray-800 rounded-lg">
-            <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-4 text-center">
-              Friction Score {session.personas && session.personas.length > 1 ? `(${PERSONA_NAMES[selectedPersona]?.split(' ')[0] || selectedPersona})` : ''}
-            </h2>
-            {!currentScore ? (
-              <p className="text-center text-gray-500 text-sm">Generating report…</p>
-            ) : (
-              <>
-                <div className="flex items-center justify-center gap-4">
-                  <div className={`text-6xl font-black ${scoreColor}`}>{currentScore.total}</div>
-                  {((report?.runs && report.runs > 1) || (currentScore.runs && currentScore.runs > 1)) && (
-                    <div className="text-left bg-gray-900/90 border border-gray-700/70 rounded-lg px-3 py-1.5 shadow-sm">
-                      <div className="text-sm font-extrabold text-white tracking-wide">
-                        {report?.score_min ?? currentScore.score_min}–{report?.score_max ?? currentScore.score_max}
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* PAGE 2: SCORE AND EXPLANATION (2)                                         */}
+      {/* (Accessible after (1); displays outcome, score breakdown, findings)       */}
+      {/* ========================================================================= */}
+      {viewMode === 'explanation' && (
+        <div className="flex-1 overflow-y-auto p-6 md:p-8 bg-bg-dark">
+          <div className="max-w-5xl mx-auto flex flex-col gap-6">
+            {/* Navigation Subheader */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-gray-800">
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => setViewMode('score')}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs font-semibold rounded-lg border border-gray-700 text-gray-200 transition-colors cursor-pointer"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  <span>Back to Scores</span>
+                </button>
+                <div className="h-4 w-[1px] bg-gray-800 hidden sm:block" />
+                <h2 className="text-base font-bold text-white flex items-center gap-2">
+                  <span>Score & Explanation</span>
+                  <span className="text-xs font-mono font-normal px-2.5 py-0.5 rounded-full bg-gremlin-purple/20 border border-gremlin-purple/40 text-purple-300">
+                    {PERSONA_NAMES[selectedPersona] || selectedPersona}
+                  </span>
+                </h2>
+              </div>
+
+              <div className="flex items-center gap-2">
+                {session.personas && session.personas.length > 1 && (
+                  <div className="flex flex-wrap gap-1.5 mr-2">
+                    {session.personas.map((p) => (
+                      <button
+                        key={p}
+                        onClick={() => setSelectedPersona(p)}
+                        className={`px-2.5 py-1 rounded text-xs font-semibold border transition-all cursor-pointer ${
+                          selectedPersona === p
+                            ? 'bg-gremlin-purple text-white border-gremlin-purple shadow-sm'
+                            : 'bg-black/40 text-gray-400 border-gray-800 hover:border-gray-700 hover:text-white'
+                        }`}
+                      >
+                        {PERSONA_NAMES[p]?.split(' ')[0] || p}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <button
+                  onClick={() => handleViewRun(selectedPersona)}
+                  className="flex items-center gap-1.5 px-3.5 py-1.5 bg-gremlin-purple/30 hover:bg-gremlin-purple/50 text-xs font-bold rounded-lg border border-gremlin-purple/50 text-purple-200 hover:text-white transition-all cursor-pointer shadow-sm"
+                  title="View step-by-step browser run"
+                >
+                  <span>View Run ({totalSteps} steps)</span>
+                  <ArrowRight className="w-3.5 h-3.5 text-gremlin-green" />
+                </button>
+              </div>
+            </div>
+
+            {/* Target and Task Summary */}
+            <div className="p-4 rounded-xl bg-black/40 border border-gray-800 grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+              <div>
+                <span className="text-gray-400 font-bold uppercase tracking-wider block mb-1">Target URL</span>
+                <a
+                  href={activeReport?.url || report?.url || session.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-mono text-gremlin-green hover:underline flex items-center gap-1 text-sm font-semibold truncate"
+                >
+                  <span className="truncate">{activeReport?.url || report?.url || session.url}</span>
+                  <ExternalLink className="w-3 h-3 shrink-0" />
+                </a>
+              </div>
+              <div>
+                <span className="text-gray-400 font-bold uppercase tracking-wider block mb-1">Audited Task</span>
+                <span className="text-gray-200 text-sm italic font-medium block">
+                  "{activeReport?.task || report?.task || session.task}"
+                </span>
+              </div>
+            </div>
+
+            {/* Error at Beginning Banner & Prompt to Rerun */}
+            {isErrorAtBeginning && (
+              <div className="p-6 rounded-2xl border border-rose-500/50 bg-gradient-to-br from-rose-950/70 via-black/90 to-bg-card shadow-[0_0_35px_rgba(244,63,94,0.18)] flex flex-col gap-4">
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 rounded-xl bg-rose-950/90 border border-rose-500/60 flex items-center justify-center text-rose-400 shrink-0 shadow-lg">
+                    <AlertTriangle className="w-6 h-6 animate-pulse" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs uppercase font-extrabold tracking-wider px-2 py-0.5 rounded bg-rose-500/20 text-rose-300 border border-rose-500/40">
+                        Audit Failed at Start
+                      </span>
+                      <span className="text-xs text-gray-400 font-mono">0 steps executed</span>
+                    </div>
+                    <h3 className="text-lg font-bold text-white mt-1">
+                      Unable to Start Usability Test
+                    </h3>
+                    <p className="text-xs text-gray-300 mt-1 leading-relaxed">
+                      {initialRerunPrompt}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Stated Error Box */}
+                <div className="p-4 rounded-xl bg-black/90 border border-rose-500/30 font-mono text-xs text-rose-300 space-y-1">
+                  <div className="text-[10px] uppercase font-bold text-gray-400 font-sans tracking-wider">
+                    Stated Error Details
+                  </div>
+                  <div className="break-all">{initialErrorMessage}</div>
+                </div>
+
+                {/* Prompt to Rerun Actions */}
+                <div className="flex flex-wrap items-center gap-3 pt-1">
+                  <button
+                    onClick={triggerRerun}
+                    className="px-5 py-2.5 bg-gradient-to-r from-gremlin-purple to-purple-600 hover:from-purple-600 hover:to-gremlin-purple text-white text-xs font-bold rounded-xl shadow-lg transition-all flex items-center gap-2 cursor-pointer"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                    <span>Rerun Test Now</span>
+                  </button>
+
+                  <button
+                    onClick={onRestart}
+                    className="px-4 py-2.5 bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-semibold rounded-xl border border-gray-700 transition cursor-pointer"
+                  >
+                    Configure Different Target / Task
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* System Interrupted Banner (Timeout / System Error) */}
+            {isSystemInterrupted && (
+              <div className="p-4 rounded-xl border border-amber-500/40 bg-amber-950/30 text-amber-300 text-xs flex items-start gap-3 shadow-lg">
+                <Activity className="w-5 h-5 shrink-0 text-amber-400 mt-0.5" />
+                <div>
+                  <span className="font-bold uppercase tracking-wider block text-[11px] text-amber-400 mb-0.5">
+                    Audit Interrupted ({outcome === 'timeout' ? 'System Timeout Limit' : 'Infrastructure Error'}) · Usability Score Up to Step {totalSteps}
+                  </span>
+                  <span className="text-gray-300">
+                    Testing concluded early at step {totalSteps} due to an infrastructure {outcome === 'timeout' ? 'timeout cap' : 'error'}. Usability friction ({currentScore?.total ?? 0}/100) is scored strictly based on heuristic findings and signals detected up to this point without penalizing the target application with a task failure penalty.
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Task Outcome Banner */}
+            {outcome && (
+              <div
+                className={`p-5 rounded-2xl border ${
+                  OUTCOME_CONFIG[outcome]?.bg ?? 'bg-gray-800/60'
+                } ${
+                  OUTCOME_CONFIG[outcome]?.border ?? 'border-gray-700'
+                } shadow-lg flex flex-col gap-2.5`}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] uppercase tracking-wider text-gray-400 font-bold">
+                    Task Outcome ({PERSONA_NAMES[selectedPersona]?.split(' ')[0] || selectedPersona})
+                  </span>
+                  {claimedOutcome &&
+                    verifiedOutcome &&
+                    claimedOutcome !== verifiedOutcome && (
+                      <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-black/60 text-amber-300 border border-amber-500/30">
+                        Claimed: {claimedOutcome} · Verified: {verifiedOutcome}
+                      </span>
+                    )}
+                </div>
+                <div className="flex items-center gap-2.5">
+                  <span
+                    className={`w-3 h-3 rounded-full ${
+                      OUTCOME_CONFIG[outcome]?.dot ?? 'bg-gray-400'
+                    } animate-pulse`}
+                  />
+                  <span
+                    className={`text-xl font-extrabold tracking-wide uppercase ${
+                      OUTCOME_CONFIG[outcome]?.text ?? 'text-white'
+                    }`}
+                  >
+                    {OUTCOME_CONFIG[outcome]?.label ?? outcome}
+                  </span>
+                </div>
+                {outcomeReason && (
+                  <p className="text-xs text-gray-300 leading-relaxed pl-3 border-l-2 border-white/20 mt-1">
+                    {outcomeReason}
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Baseline Warning */}
+            {(activeReport?.baseline_failed || report?.baseline_failed) && (
+              <div className="p-4 rounded-xl border border-amber-500/50 bg-amber-950/40 text-amber-300 text-xs flex items-start gap-3 shadow-lg">
+                <ShieldAlert className="w-5 h-5 shrink-0 text-amber-400 mt-0.5" />
+                <div>
+                  <span className="font-bold uppercase tracking-wider block text-[11px] text-amber-400 mb-0.5">
+                    Baseline Warning
+                  </span>
+                  <span>
+                    Task may be unreachable or unclear: direct baseline agent failed to achieve completion. Friction score fell back to heuristic step budget.
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Friction Score & Score Parts Breakdown */}
+            <div className="p-6 bg-black/40 border border-gray-800 rounded-2xl shadow-lg">
+              <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-4 font-bold flex items-center justify-between">
+                <span>Friction Score Breakdown</span>
+                <span className="text-xs font-mono font-normal text-gray-400">
+                  {PERSONA_NAMES[selectedPersona] || selectedPersona}
+                </span>
+              </h2>
+
+              {!currentScore ? (
+                <p className="text-center text-gray-500 text-sm py-8">Generating report…</p>
+              ) : (
+                <>
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-6 pb-6 border-b border-gray-800/80">
+                    <div className="flex items-center gap-5">
+                      <div className={`text-6xl font-black font-mono tracking-tight ${scoreColor}`}>
+                        {currentScore.total}
                       </div>
-                      <div className="text-[11px] text-gremlin-green font-medium">
-                        consistent across {report?.runs ?? currentScore.runs} runs
+                      <div>
+                        <div className="text-sm font-bold text-white">
+                          {currentScore.label} Friction
+                        </div>
+                        <div className="text-xs text-gray-400 mt-0.5">
+                          {currentScore.steps_taken} steps taken · about {currentScore.ideal_steps} expected
+                          {activeReport?.baseline_failed || report?.baseline_failed ? ' (heuristic fallback)' : ''}
+                        </div>
                       </div>
                     </div>
-                  )}
-                </div>
-                <p className="text-center text-sm mt-1 text-gray-400">
-                  {currentScore.label} friction · {currentScore.steps_taken} steps taken, about {currentScore.ideal_steps} expected
-                  {activeReport?.baseline_failed || report?.baseline_failed ? ' (heuristic fallback)' : ''}
-                </p>
-                <p className="mt-4 text-sm text-gray-300">{activeReport?.verdict || report?.verdict}</p>
 
-                <div className="mt-5 space-y-3">
-                  {currentScore.parts?.map((p) => (
-                    <div key={p.name}>
-                      <div className="flex justify-between text-sm">
-                        <span>{p.name}</span>
-                        <span className="text-gray-400">+{p.points}</span>
+                    {((report?.runs && report.runs > 1) || (currentScore.runs && currentScore.runs > 1)) && (
+                      <div className="text-left bg-gray-900/90 border border-gray-700/70 rounded-xl px-4 py-2 shadow-sm">
+                        <div className="text-sm font-extrabold text-white tracking-wide">
+                          {report?.score_min ?? currentScore.score_min}–{report?.score_max ?? currentScore.score_max}
+                        </div>
+                        <div className="text-[11px] text-gremlin-green font-medium">
+                          consistent across {report?.runs ?? currentScore.runs} runs
+                        </div>
                       </div>
-                      <div className="h-1.5 rounded bg-gray-800">
-                        <div className="h-1.5 rounded bg-red-500" style={{ width: `${Math.min(100, p.points * 5)}%` }} />
+                    )}
+                  </div>
+
+                  <p className="mt-4 text-sm text-gray-300 leading-relaxed font-medium">
+                    {activeReport?.verdict || report?.verdict}
+                  </p>
+
+                  <div className="mt-6 space-y-4">
+                    <h3 className="text-xs uppercase font-bold text-gray-400 tracking-wider">
+                      Cognitive Friction Penalties & Heuristics
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {currentScore.parts?.map((p) => (
+                        <div key={p.name} className="p-4 rounded-xl bg-gray-900/60 border border-gray-800/80 flex flex-col justify-between">
+                          <div>
+                            <div className="flex justify-between items-center text-sm font-semibold">
+                              <span className="text-gray-200">{p.name}</span>
+                              <span className="text-rose-400 font-mono">+{p.points} pts</span>
+                            </div>
+                            <div className="h-1.5 rounded-full bg-gray-800 mt-2 overflow-hidden">
+                              <div
+                                className="h-1.5 rounded-full bg-red-500"
+                                style={{ width: `${Math.min(100, p.points * 5)}%` }}
+                              />
+                            </div>
+                            <p className="mt-2 text-xs text-gray-400 leading-relaxed">{p.why}</p>
+                          </div>
+                          {p.evidence && p.evidence.length > 0 && (
+                            <div className="mt-3 pt-2.5 border-t border-gray-800/60 flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[10px] uppercase font-bold text-gray-500 mr-1">Steps:</span>
+                              {p.evidence.slice(0, 8).map((n) => (
+                                <button
+                                  key={n}
+                                  onClick={() => jumpToStep(n)}
+                                  className="px-2 py-0.5 text-xs font-mono font-semibold rounded bg-gray-800 hover:bg-gremlin-purple hover:text-white text-gray-300 transition-colors cursor-pointer"
+                                  title={`Inspect Step ${n}`}
+                                >
+                                  step {n}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {selectedPersona === 'pro_tester' && (
+                    <div className="mt-5 pt-4 border-t border-gray-800/80 flex items-center justify-between text-xs">
+                      <span className="text-gray-400 font-medium">Automated QA Defects Flagged:</span>
+                      <span className="font-bold text-gremlin-green text-sm font-mono">
+                        {activeReport?.bugs ?? report?.bugs ?? 0} defects
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* Usability Findings & Defect Highlights */}
+            <div className="flex flex-col gap-4">
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-bold text-white flex items-center gap-2">
+                  <span>Usability Findings & Defect Highlights</span>
+                  <span className="text-xs font-mono font-normal px-2.5 py-0.5 rounded-full bg-gray-800 text-gray-300 border border-gray-700">
+                    {currentFindings.length} {currentFindings.length === 1 ? 'Finding' : 'Findings'}
+                  </span>
+                </h3>
+              </div>
+
+              {currentFindings.length === 0 ? (
+                <div className="p-8 text-center text-gray-500 text-sm bg-black/40 border border-gray-800 rounded-2xl">
+                  No critical usability vulnerabilities detected for this persona.
+                </div>
+              ) : (
+                currentFindings.map((f) => (
+                  <div key={f.title} className="p-6 bg-black/40 border border-gray-800 rounded-2xl shadow-lg">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <h4 className="font-bold text-base text-white">{f.title}</h4>
+                      <div className="flex items-center gap-2">
+                        {f.consistency && (
+                          <span
+                            className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded border ${
+                              f.consistency === 'consistent'
+                                ? 'bg-emerald-950/80 text-emerald-400 border-emerald-500/40'
+                                : 'bg-gray-800/80 text-gray-400 border-gray-700'
+                            }`}
+                          >
+                            {f.consistency}
+                          </span>
+                        )}
+                        <span className={`text-xs uppercase font-extrabold px-2 py-0.5 rounded border ${
+                          f.severity === 'critical'
+                            ? 'bg-rose-950/80 text-rose-400 border-rose-500/50'
+                            : f.severity === 'high'
+                            ? 'bg-amber-950/80 text-amber-400 border-amber-500/50'
+                            : 'bg-blue-950/80 text-blue-400 border-blue-500/50'
+                        }`}>
+                          {f.severity}
+                        </span>
                       </div>
-                      <p className="mt-1 text-xs text-gray-500">{p.why}</p>
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        {p.evidence.slice(0, 8).map((n) => (
+                    </div>
+
+                    <p className="mt-3 text-sm text-gray-300 leading-relaxed">{f.what_happened}</p>
+                    <p className="mt-1.5 text-xs text-gray-400">
+                      <strong className="text-gray-300">Impact:</strong> {f.impact}
+                    </p>
+
+                    {f.suggested_fix ? (
+                      <div className="mt-3 p-3 bg-black/80 border border-emerald-500/30 rounded-xl font-mono text-xs text-gremlin-green whitespace-pre-wrap shadow-inner">
+                        <div className="text-[10px] uppercase tracking-wider text-gray-400 font-sans font-bold mb-1.5 flex items-center justify-between">
+                          <span>Suggested Fix</span>
+                          {f.selector && <span className="text-gray-500 font-mono text-[10px] lowercase">{f.selector}</span>}
+                        </div>
+                        {f.suggested_fix}
+                      </div>
+                    ) : (
+                      <p className="mt-2 text-xs text-gremlin-green">
+                        <strong>Fix Recommendation:</strong> {f.recommendation}
+                      </p>
+                    )}
+
+                    {f.screenshot && (
+                      <div className="mt-4 overflow-hidden rounded-xl border border-red-500/40 bg-black/90 shadow-md">
+                        <div className="px-3 py-1.5 text-[10px] uppercase tracking-wider text-red-400 bg-red-950/40 border-b border-red-500/20 flex items-center justify-between font-semibold">
+                          <span>Defect Highlight (Step {f.step_number || (f.evidence_steps && f.evidence_steps[0]) || 1})</span>
+                          {f.bounding_box && (
+                            <span className="text-gray-400 font-mono text-[9px]">
+                              [{f.bounding_box.width}×{f.bounding_box.height}px]
+                            </span>
+                          )}
+                        </div>
+                        <div
+                          className="cursor-pointer group relative overflow-hidden bg-gray-950/90 p-2 flex items-center justify-center"
+                          onClick={() => {
+                            const stepNum = f.step_number || (f.evidence_steps && f.evidence_steps[0]);
+                            if (stepNum) jumpToStep(stepNum);
+                          }}
+                          title="Click to jump into Step Replay at this step"
+                        >
+                          <img
+                            src={`data:image/jpeg;base64,${f.screenshot}`}
+                            alt={f.title}
+                            className="max-h-64 w-full object-contain rounded transition group-hover:scale-[1.01]"
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    {f.evidence_steps && f.evidence_steps.length > 0 && (
+                      <div className="mt-3.5 flex items-center gap-1.5 flex-wrap">
+                        <span className="text-[10px] uppercase font-bold text-gray-500 mr-1">Evidence Steps:</span>
+                        {f.evidence_steps.map((n) => (
                           <button
                             key={n}
                             onClick={() => jumpToStep(n)}
-                            className="px-1.5 py-0.5 text-xs rounded bg-gray-800 hover:bg-gray-700 cursor-pointer"
+                            className="px-2.5 py-0.5 text-xs font-mono font-semibold rounded bg-gray-800 hover:bg-gremlin-purple hover:text-white text-gray-300 transition cursor-pointer"
                           >
                             step {n}
                           </button>
                         ))}
                       </div>
-                    </div>
-                  ))}
-                </div>
-
-                {selectedPersona === 'pro_tester' && (
-                  <div className="mt-4 pt-4 border-t border-gray-800/80 flex items-center justify-around text-xs">
-                    <span className="text-gray-400">QA Bugs Found:</span>
-                    <span className="font-bold text-gremlin-green text-sm">{activeReport?.bugs ?? report?.bugs ?? 0}</span>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-
-          {currentFindings.map((f) => (
-            <div key={f.title} className="p-4 bg-black/40 border border-gray-800 rounded-lg">
-              <div className="flex items-center justify-between">
-                <h3 className="font-semibold text-sm">{f.title}</h3>
-                <div className="flex items-center gap-2">
-                  {f.consistency && (
-                    <span
-                      className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded border ${
-                        f.consistency === 'consistent'
-                          ? 'bg-emerald-950/80 text-emerald-400 border-emerald-500/40'
-                          : 'bg-gray-800/80 text-gray-400 border-gray-700'
-                      }`}
-                    >
-                      {f.consistency}
-                    </span>
-                  )}
-                  <span className="text-xs uppercase text-red-400">{f.severity}</span>
-                </div>
-              </div>
-              <p className="mt-2 text-sm text-gray-300">{f.what_happened}</p>
-              <p className="mt-1 text-xs text-gray-500">Impact: {f.impact}</p>
-
-              {f.suggested_fix ? (
-                <div className="mt-2.5 p-2.5 bg-black/70 border border-emerald-500/30 rounded font-mono text-[11px] text-gremlin-green whitespace-pre-wrap shadow-inner">
-                  <div className="text-[9px] uppercase tracking-wider text-gray-400 font-sans font-bold mb-1 flex items-center justify-between">
-                    <span>Suggested Fix</span>
-                    {f.selector && <span className="text-gray-500 font-mono text-[9px] lowercase">{f.selector}</span>}
-                  </div>
-                  {f.suggested_fix}
-                </div>
-              ) : (
-                <p className="mt-1 text-xs text-gremlin-green">Fix: {f.recommendation}</p>
-              )}
-
-              {f.screenshot && (
-                <div className="mt-3 overflow-hidden rounded-lg border border-red-500/40 bg-black/80 shadow-md">
-                  <div className="px-2.5 py-1 text-[10px] uppercase tracking-wider text-red-400 bg-red-950/40 border-b border-red-500/20 flex items-center justify-between font-semibold">
-                    <span>Defect Highlight (Step {f.step_number || (f.evidence_steps && f.evidence_steps[0]) || 1})</span>
-                    {f.bounding_box && (
-                      <span className="text-gray-400 font-mono text-[9px]">
-                        [{f.bounding_box.width}×{f.bounding_box.height}px]
-                      </span>
                     )}
                   </div>
-                  <div
-                    className="cursor-pointer group relative overflow-hidden bg-gray-950/80 p-1 flex items-center justify-center"
-                    onClick={() => {
-                      const stepNum = f.step_number || (f.evidence_steps && f.evidence_steps[0]);
-                      if (stepNum) jumpToStep(stepNum);
-                    }}
-                    title="Click to jump to step"
-                  >
-                    <img
-                      src={`data:image/jpeg;base64,${f.screenshot}`}
-                      alt={f.title}
-                      className="max-h-48 w-full object-contain rounded transition group-hover:scale-[1.01]"
-                    />
-                  </div>
+                ))
+              )}
+            </div>
+
+            {/* Bottom Actions */}
+            <div className="pt-4 border-t border-gray-800 flex items-center justify-between">
+              <button
+                onClick={() => setViewMode('score')}
+                className="flex items-center gap-1.5 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-xs font-semibold rounded-xl border border-gray-700 text-gray-200 transition cursor-pointer"
+              >
+                <ChevronLeft className="w-4 h-4" />
+                <span>Back to Usability Score</span>
+              </button>
+              <button
+                onClick={() => handleViewRun(selectedPersona)}
+                className="flex items-center gap-2 px-5 py-2.5 bg-gremlin-purple hover:bg-purple-600 text-xs font-bold rounded-xl text-white shadow-lg transition cursor-pointer"
+              >
+                <span>View Step-by-Step Run ({totalSteps} steps)</span>
+                <ArrowRight className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* PAGE 3: THE STEPS / RUN REPLAY (3)                                        */}
+      {/* (Accessible ONLY when user clicks 'View Run' in (1) or an evidence step)  */}
+      {/* ========================================================================= */}
+      {viewMode === 'run' && (
+        <div className="flex-1 flex flex-col bg-bg-dark overflow-hidden">
+          {/* Top Bar for Step Replay */}
+          <div className="h-14 border-b border-gray-800 bg-bg-card px-6 flex items-center justify-between shrink-0 gap-4 z-10">
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setViewMode('score')}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs font-semibold rounded-lg border border-gray-700 text-gray-200 transition-colors cursor-pointer"
+                title="Return to Score Overview"
+              >
+                <ChevronLeft className="w-4 h-4" />
+                <span>Scores</span>
+              </button>
+              <button
+                onClick={() => setViewMode('explanation')}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs font-semibold rounded-lg border border-gray-700 text-gray-200 transition-colors cursor-pointer"
+                title="Go to Score & Explanation"
+              >
+                <FileText className="w-3.5 h-3.5 text-gray-400" />
+                <span>Score & Explanation</span>
+              </button>
+              <div className="h-4 w-[1px] bg-gray-800 hidden sm:block" />
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-400 font-bold uppercase tracking-wider hidden sm:inline">Persona:</span>
+                <span className="text-xs text-gremlin-purple font-semibold font-mono">
+                  {PERSONA_NAMES[selectedPersona] || selectedPersona}
+                </span>
+              </div>
+            </div>
+
+            {/* Persona Switcher & Controls */}
+            <div className="flex items-center gap-3">
+              {session.personas && session.personas.length > 1 && (
+                <div className="flex flex-wrap gap-1 mr-2">
+                  {session.personas.map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => {
+                        setSelectedPersona(p);
+                        setCurrentIndex(0);
+                      }}
+                      className={`px-2.5 py-1 rounded text-xs font-semibold border transition-all cursor-pointer ${
+                        selectedPersona === p
+                          ? 'bg-gremlin-purple text-white border-gremlin-purple shadow-sm'
+                          : 'bg-black/40 text-gray-400 border-gray-800 hover:border-gray-700 hover:text-white'
+                      }`}
+                    >
+                      {PERSONA_NAMES[p]?.split(' ')[0] || p}
+                    </button>
+                  ))}
                 </div>
               )}
 
-              <div className="mt-2.5 flex flex-wrap gap-1">
-                {f.evidence_steps.map((n) => (
-                  <button
-                    key={n}
-                    onClick={() => jumpToStep(n)}
-                    className="px-1.5 py-0.5 text-xs rounded bg-gray-800 hover:bg-gray-700"
-                  >
-                    step {n}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
+              <span className="text-xs font-mono font-semibold text-gray-300">
+                Step {totalSteps > 0 ? currentIndex + 1 : 0} of {totalSteps}
+              </span>
 
-        {/* Right Side: Slideshow */}
-        <div className="w-2/3 flex flex-col relative p-6 bg-black/20">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="text-gray-400 uppercase tracking-widest text-sm font-semibold">
-              Step {totalSteps > 0 ? currentIndex + 1 : 0} of {totalSteps}
-            </h2>
-            <div className="flex gap-2">
-              <button
-                onClick={handlePrev}
-                disabled={currentIndex === 0}
-                className="p-2 rounded bg-gray-800 disabled:opacity-50 hover:bg-gray-700 transition"
-              >
-                <ChevronLeft className="w-5 h-5" />
-              </button>
-              <button
-                onClick={handleNext}
-                disabled={currentIndex >= totalSteps - 1}
-                className="p-2 rounded bg-gray-800 disabled:opacity-50 hover:bg-gray-700 transition"
-              >
-                <ChevronRight className="w-5 h-5" />
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={handlePrev}
+                  disabled={currentIndex === 0}
+                  className="p-1.5 rounded-lg bg-gray-800 disabled:opacity-40 hover:bg-gray-700 text-gray-200 transition cursor-pointer"
+                  title="Previous Step (Left Arrow)"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+                <button
+                  onClick={handleNext}
+                  disabled={currentIndex >= totalSteps - 1}
+                  className="p-1.5 rounded-lg bg-gray-800 disabled:opacity-40 hover:bg-gray-700 text-gray-200 transition cursor-pointer"
+                  title="Next Step (Right Arrow)"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           </div>
 
-          <div className="flex-1 flex flex-col min-h-0 bg-black border border-gray-800 rounded-lg overflow-hidden">
-            {currentItem?.screenshot ? (
-              <div className="flex-1 overflow-hidden p-2 flex items-center justify-center bg-gray-900/50">
+          {/* Step Timeline Strip */}
+          {totalSteps > 1 && (
+            <div className="px-6 py-2 bg-black/50 border-b border-gray-800/80 flex items-center gap-1.5 overflow-x-auto shrink-0">
+              <span className="text-[10px] uppercase font-bold text-gray-500 mr-2 shrink-0">Timeline:</span>
+              {slideshowItems.map((_, idx) => (
+                <button
+                  key={idx}
+                  onClick={() => setCurrentIndex(idx)}
+                  className={`px-2.5 py-0.5 rounded text-[11px] font-mono font-bold transition-all cursor-pointer shrink-0 ${
+                    currentIndex === idx
+                      ? 'bg-gremlin-purple text-white shadow-[0_0_10px_rgba(157,0,255,0.4)]'
+                      : 'bg-gray-800/80 text-gray-400 hover:bg-gray-700 hover:text-gray-200'
+                  }`}
+                >
+                  {idx + 1}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Screenshot Display & Observation */}
+          <div className="flex-1 min-h-0 p-4 md:p-6 flex flex-col gap-4">
+            <div className="flex-1 min-h-0 bg-black border border-gray-800 rounded-2xl overflow-hidden flex items-center justify-center p-2 relative shadow-inner">
+              {currentItem?.screenshot ? (
                 <img
                   src={`data:image/jpeg;base64,${currentItem.screenshot}`}
-                  alt="Step screenshot"
-                  className="max-h-full max-w-full object-contain"
+                  alt={`Step ${currentIndex + 1} screenshot`}
+                  className="max-h-full max-w-full object-contain rounded shadow-lg"
                 />
+              ) : (
+                <div className="text-gray-500 text-xs font-mono">
+                  No screenshot recorded for this step
+                </div>
+              )}
+            </div>
+
+            {/* Bottom Thought & Observation Console */}
+            <div className="h-28 border border-gray-800 bg-bg-card rounded-2xl p-4 overflow-y-auto shadow-lg shrink-0">
+              <div className="text-xs font-mono text-gray-300 leading-relaxed">
+                <span className="text-gremlin-purple font-bold mr-2">&gt;</span>
+                {currentItem?.thought || 'No thought recorded for this step.'}
               </div>
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-gray-600">
-                No screenshot for this step
-              </div>
-            )}
-            
-            <div className="h-32 border-t border-gray-800 bg-bg-card p-4 overflow-y-auto">
-              <div className="text-sm font-mono text-gray-300">
-                <span className="text-gremlin-purple mr-2">&gt;</span>
-                {currentItem?.thought || "No thought recorded."}
-              </div>
+              {('friction_note' in currentItem) && currentItem.friction_note && (
+                <div className="mt-2 text-[11px] text-amber-400 font-mono flex items-center gap-1.5">
+                  <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+                  <span>{currentItem.friction_note}</span>
+                </div>
+              )}
             </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

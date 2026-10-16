@@ -8,6 +8,7 @@ from main import (
     _PersonaQueueAdapter,
     _aggregate_comparison,
     _extract_top_finding,
+    _clean_report_cycles,
 )
 from scoring import Step
 
@@ -207,3 +208,78 @@ def test_get_report_compare_mode(client):
     assert rep["comparison"]["skeptic"]["score"] == 55
     assert rep["comparison"]["skeptic"]["top_finding"] == "Missing privacy link on payment form"
     assert rep["comparison"]["pro_tester"]["score"] == 15
+
+
+def test_single_persona_report_no_circular_recursion(client):
+    """Verifies single-persona reports can be serialized and fetched without RecursionError."""
+    session_id = "single_test_123"
+    sessions[session_id] = {
+        "session_id": session_id,
+        "url": "https://example.com",
+        "task": "Test single",
+        "persona": "pro_tester",
+        "personas": ["pro_tester"],
+        "is_compare": False,
+        "status": "completed",
+    }
+    
+    # Simulate the single-persona report structure constructed in _run_browser
+    final_report = {
+        "session_id": session_id,
+        "url": "https://example.com",
+        "task": "Test single",
+        "persona": "pro_tester",
+        "score": {"total": 85, "steps_taken": 4, "parts": []},
+        "verdict": "Single run finished",
+        "findings": [{"title": "Button too small", "severity": "medium"}],
+        "actions": [{"step_number": 1, "action": "click"}],
+        "outcome": "completed",
+    }
+    single_rep = dict(final_report)
+    single_rep.pop("persona_reports", None)
+    comp, comp_summary = _aggregate_comparison({"pro_tester": single_rep}, ["pro_tester"])
+    final_report["comparison"] = comp
+    final_report["comparison_summary"] = comp_summary
+    final_report["persona_reports"] = {"pro_tester": single_rep}
+    final_report["personas"] = ["pro_tester"]
+    final_report["is_compare"] = False
+
+    sessions[session_id]["report"] = final_report
+
+    res = client.get(f"/api/report?session_id={session_id}")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["session_id"] == session_id
+    assert data["score"]["total"] == 85
+    assert "persona_reports" in data
+    assert "pro_tester" in data["persona_reports"]
+    assert data["persona_reports"]["pro_tester"]["score"]["total"] == 85
+
+
+def test_clean_report_cycles_breaks_self_reference(client):
+    """Verifies that if a self-referential cycle is ever present, _clean_report_cycles breaks it."""
+    cyclic_rep = {
+        "session_id": "cycle_test_456",
+        "score": {"total": 70},
+        "findings": [],
+        "actions": [],
+    }
+    # Deliberately create the direct cycle that caused RecursionError
+    cyclic_rep["persona_reports"] = {"pro_tester": cyclic_rep}
+
+    cleaned = _clean_report_cycles(cyclic_rep)
+    assert cleaned["persona_reports"]["pro_tester"] is not cyclic_rep
+    assert "persona_reports" not in cleaned["persona_reports"]["pro_tester"]
+    assert cleaned["persona_reports"]["pro_tester"]["score"]["total"] == 70
+
+    # Verify FastAPI serializes it cleanly without crashing
+    sessions["cycle_test_456"] = {
+        "session_id": "cycle_test_456",
+        "report": cyclic_rep,
+        "status": "completed",
+    }
+    res = client.get("/api/report?session_id=cycle_test_456")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["session_id"] == "cycle_test_456"
+

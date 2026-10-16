@@ -472,3 +472,87 @@ def test_llm_cannot_alter_computed_numbers():
     assert report["verdict"] == "The LLM says this is the summary paragraph."
     assert len(report["findings"]) == 1
     assert report["findings"][0]["title"] == "Test Finding"
+
+
+def test_timeout_ending_scores_strictly_on_findings_upto_then():
+    """
+    Verify that when an audit ends due to timeout or system error on our side:
+    - Score is calculated strictly on findings and heuristic signals up to then
+    - No arbitrary 40-pt task failure penalty is applied
+    - Breakdown includes 'Audit Interrupted (System / Timeout)' with 0 pts
+    """
+    step1 = Step(
+        n=1,
+        url="https://app.test/page1",
+        url_after="https://app.test/page1",
+        action="click",
+        label="Submit",
+        ok=True,
+        dead_click=True,  # 8 pts
+    )
+    step2 = Step(
+        n=2,
+        url="https://app.test/page1",
+        url_after="https://app.test/page1",
+        action="click",
+        label="Submit",
+        ok=True,  # repeated action -> 5 pts
+    )
+
+    # 1. System timeout
+    timeout_session = {
+        "steps": [step1, step2],
+        "outcome": "timeout",
+        "outcome_reason": "Max session duration reached",
+        "is_system_error": True,
+    }
+    timeout_score = compute_friction(timeout_session)
+    # Score should be dead click (8) + repeated action (5) = 13 (no 40-pt penalty!)
+    assert timeout_score["score"] == 13
+    assert timeout_score["label"] == "Smooth"
+    interrupted_part = next((p for p in timeout_score["breakdown"] if "Interrupted" in p["name"]), None)
+    assert interrupted_part is not None
+    assert interrupted_part["points"] == 0
+
+    # 2. Compare against user abandonment (which receives 35 pts penalty)
+    abandoned_session = {
+        "steps": [step1, step2],
+        "outcome": "abandoned",
+        "outcome_reason": "User gave up",
+        "is_system_error": False,
+    }
+    abandoned_score = compute_friction(abandoned_session)
+    # 13 + 35 = 48
+    assert abandoned_score["score"] == 48
+    assert abandoned_score["label"] == "Moderate"
+
+
+def test_system_error_run_exception_handling():
+    """
+    Verify _handle_run_exception distinguishes:
+    1. Error at beginning (len(steps) == 0): flags error_at_beginning, prompt_rerun, provides rerun_prompt with stated error.
+    2. Interrupted during run (len(steps) > 0): computes score strictly on findings up to that step.
+    """
+    from main import _handle_run_exception
+
+    # Case 1: Error at beginning before any step was taken
+    exc_start = ConnectionRefusedError("net::ERR_CONNECTION_REFUSED at http://localhost:9999")
+    res_start = _handle_run_exception("pro_tester", exc_start, [], "http://localhost:9999")
+    assert res_start["error_at_beginning"] is True
+    assert res_start["prompt_rerun"] is True
+    assert "ERR_CONNECTION_REFUSED" in res_start["rerun_prompt"]
+    assert "rerun the test" in res_start["rerun_prompt"].lower()
+    assert res_start["score"]["total"] == 0
+
+    # Case 2: Error or timeout after 2 steps were executed
+    step1 = {"n": 1, "url": "http://test.com", "action": "click", "label": "Start", "dead_click": True}
+    step2 = {"n": 2, "url": "http://test.com", "action": "click", "label": "Start"}
+    exc_during = TimeoutError("Playwright request timeout after 30000ms")
+    res_during = _handle_run_exception("pro_tester", exc_during, [step1, step2], "http://test.com")
+    assert res_during.get("error_at_beginning") is not True
+    assert res_during["outcome"] == "timeout"
+    # Score should be based on step 1 & 2 findings (dead click + repeated action = 13), not 0 or 40+ penalty
+    assert res_during["score"]["total"] == 13
+    assert len(res_during["actions"]) == 2
+    assert any("Audit Interrupted" in f["title"] for f in res_during["findings"])
+

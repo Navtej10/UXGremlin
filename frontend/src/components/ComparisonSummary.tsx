@@ -14,6 +14,8 @@ interface ComparisonSummaryProps {
   comparisonSummary?: ComparisonItem[];
   selectedPersona?: string;
   onSelectPersona?: (personaId: string) => void;
+  onViewRun?: (personaId: string) => void;
+  fallbackItem?: ComparisonItem;
 }
 
 const PERSONA_DETAILS: Record<string, { name: string; icon: string }> = {
@@ -55,6 +57,18 @@ const OUTCOME_STYLES: Record<string, { label: string; bg: string; text: string; 
     text: 'text-rose-400',
     border: 'border-rose-500/40',
   },
+  timeout: {
+    label: 'Timeout',
+    bg: 'bg-amber-950/70',
+    text: 'text-amber-400',
+    border: 'border-amber-500/40',
+  },
+  system_error: {
+    label: 'Interrupted',
+    bg: 'bg-amber-950/70',
+    text: 'text-amber-400',
+    border: 'border-amber-500/40',
+  },
 };
 
 function getScoreColor(score: number): { text: string; bg: string; border: string } {
@@ -69,14 +83,20 @@ export function ComparisonSummary({
   comparisonSummary,
   selectedPersona,
   onSelectPersona,
+  onViewRun,
+  fallbackItem,
 }: ComparisonSummaryProps) {
   // Normalize comparison items
-  const items: ComparisonItem[] =
+  let items: ComparisonItem[] =
     comparisonSummary && comparisonSummary.length > 0
       ? comparisonSummary
       : comparison
       ? Object.values(comparison)
       : [];
+
+  if (items.length === 0 && fallbackItem) {
+    items = [fallbackItem];
+  }
 
   if (items.length === 0) {
     return null;
@@ -89,7 +109,7 @@ export function ComparisonSummary({
   const avgScore = Math.round(items.reduce((acc, curr) => acc + curr.score, 0) / items.length);
 
   return (
-    <div className="w-full bg-bg-card/90 border border-gremlin-purple/30 rounded-2xl p-6 shadow-[0_0_30px_rgba(157,0,255,0.12)] mb-8 transition-all">
+    <div className="w-full bg-bg-card/90 border border-gremlin-purple/30 rounded-2xl p-6 shadow-[0_0_30px_rgba(157,0,255,0.12)] mb-6 transition-all">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-gray-800">
         <div className="flex items-center gap-3">
@@ -100,7 +120,7 @@ export function ComparisonSummary({
             <h2 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
               Persona Usability Comparison
               <span className="text-xs font-mono font-normal px-2.5 py-0.5 rounded-full bg-gremlin-purple/20 border border-gremlin-purple/40 text-purple-300">
-                {items.length} Personas Tested
+                {items.length} {items.length === 1 ? 'Persona' : 'Personas'} Tested
               </span>
             </h2>
             <p className="text-xs text-text-main/70 mt-0.5">
@@ -147,10 +167,14 @@ export function ComparisonSummary({
             icon: '👤',
           };
 
+          const handleCardClick = () => {
+            onSelectPersona?.(item.persona);
+          };
+
           return (
             <div
               key={item.persona}
-              onClick={() => onSelectPersona?.(item.persona)}
+              onClick={handleCardClick}
               className={`p-4 rounded-xl border transition-all cursor-pointer group ${
                 isSelected
                   ? 'bg-purple-950/30 border-gremlin-purple shadow-[0_0_20px_rgba(157,0,255,0.25)]'
@@ -213,17 +237,30 @@ export function ComparisonSummary({
                 />
               </div>
 
-              {/* Row 3: Top Finding Highlight */}
-              <div className="mt-2.5 pt-2 border-t border-gray-800/60 flex items-start justify-between gap-2 text-xs">
-                <div className="flex items-center gap-2 text-gray-300">
+              {/* Row 3: Top Finding Highlight & Actions */}
+              <div className="mt-3 pt-2.5 border-t border-gray-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2 text-gray-300 min-w-0 flex-1">
                   <ShieldAlert className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                   <span className="text-gray-400 font-medium shrink-0">Top Finding:</span>
-                  <span className="text-text-main line-clamp-1 italic">{item.top_finding}</span>
+                  <span className="text-text-main truncate italic">{item.top_finding}</span>
                 </div>
-                {onSelectPersona && (
-                  <span className="text-[11px] text-gremlin-purple group-hover:text-gremlin-green font-semibold flex items-center gap-1 shrink-0 transition-colors">
-                    View Run <ArrowRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform" />
-                  </span>
+
+                {onViewRun && (
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onSelectPersona?.(item.persona);
+                        onViewRun(item.persona);
+                      }}
+                      className="px-3.5 py-1 rounded-lg bg-gremlin-purple/30 hover:bg-gremlin-purple/50 text-purple-200 hover:text-white font-bold text-[11px] border border-gremlin-purple/50 shadow-sm transition-all cursor-pointer flex items-center gap-1.5"
+                      title="View step-by-step browser run"
+                    >
+                      <span>View Run</span>
+                      <ArrowRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform text-gremlin-green" />
+                    </button>
+                  </div>
                 )}
               </div>
             </div>

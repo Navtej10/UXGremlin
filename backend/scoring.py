@@ -6,6 +6,7 @@ from evidence import (
     detect_findings_from_evidence,
     attach_screenshots_with_bounding_boxes,
     generate_suggested_fixes,
+    normalize_selector_pattern,
 )
 
 # ---------------------------------------------------------------------------
@@ -356,34 +357,58 @@ def compute_friction(session: dict | list[Step] | Any, completed: bool | None = 
     # Signal 7: task failure penalty based on outcome status
     # -------------------------------------------------------------------------
     is_completed_success = (outcome == "completed")
+    is_system_error = (
+        (session.get("is_system_error", False) if isinstance(session, dict) else getattr(session, "is_system_error", False))
+        or outcome in ("timeout", "system_error")
+        or ("timeout" in (outcome_reason or "").lower() and outcome == "error")
+        or ("system error" in (outcome_reason or "").lower() and outcome == "error")
+        or ("interrupted" in (outcome_reason or "").lower() and outcome == "error")
+    )
     if not is_completed_success:
-        if outcome == "abandoned":
-            failure_pts = PENALTY_OUTCOME_ABANDONED
-        elif outcome == "gave_up":
-            failure_pts = PENALTY_OUTCOME_GAVE_UP
-        elif outcome == "error":
-            failure_pts = PENALTY_OUTCOME_ERROR
-        elif outcome == "max_steps_reached":
-            failure_pts = PENALTY_OUTCOME_MAX_STEPS
+        if is_system_error:
+            # If the ending is due to a timeout or error on our side,
+            # calculate the score strictly from findings and friction up to then.
+            last_step_num = []
+            if steps:
+                last_s = steps[-1]
+                last_step_num = [getattr(last_s, "n", len(steps)) if not isinstance(last_s, dict) else last_s.get("n", len(steps))]
+            desc = f"Audit concluded early due to timeout or system error on our side ({outcome_reason or 'infrastructure interrupted'}). Score is calculated strictly from findings and observations up to step {steps_taken}."
+            breakdown.append({
+                "name": "Audit Interrupted (System / Timeout)",
+                "points": 0,
+                "description": desc,
+                "why": desc,
+                "step_numbers": last_step_num,
+                "evidence": last_step_num,
+            })
         else:
-            failure_pts = PENALTY_OUTCOME_INCOMPLETE
+            if outcome == "abandoned":
+                failure_pts = PENALTY_OUTCOME_ABANDONED
+            elif outcome == "gave_up":
+                failure_pts = PENALTY_OUTCOME_GAVE_UP
+            elif outcome == "error":
+                failure_pts = PENALTY_OUTCOME_ERROR
+            elif outcome == "max_steps_reached":
+                failure_pts = PENALTY_OUTCOME_MAX_STEPS
+            else:
+                failure_pts = PENALTY_OUTCOME_INCOMPLETE
 
-        pts = min(CAP_TASK_FAILURE, failure_pts)
-        last_step_num = []
-        if steps:
-            last_s = steps[-1]
-            last_step_num = [getattr(last_s, "n", len(steps)) if not isinstance(last_s, dict) else last_s.get("n", len(steps))]
+            pts = min(CAP_TASK_FAILURE, failure_pts)
+            last_step_num = []
+            if steps:
+                last_s = steps[-1]
+                last_step_num = [getattr(last_s, "n", len(steps)) if not isinstance(last_s, dict) else last_s.get("n", len(steps))]
 
-        reason_suffix = f": {outcome_reason}" if outcome_reason else ""
-        desc = f"Task was not completed successfully (outcome: '{outcome or 'incomplete'}'){reason_suffix}."
-        breakdown.append({
-            "name": "Task Outcome Failure",
-            "points": pts,
-            "description": desc,
-            "why": desc,
-            "step_numbers": last_step_num,
-            "evidence": last_step_num,
-        })
+            reason_suffix = f": {outcome_reason}" if outcome_reason else ""
+            desc = f"Task was not completed successfully (outcome: '{outcome or 'incomplete'}'){reason_suffix}."
+            breakdown.append({
+                "name": "Task Outcome Failure",
+                "points": pts,
+                "description": desc,
+                "why": desc,
+                "step_numbers": last_step_num,
+                "evidence": last_step_num,
+            })
 
     # -------------------------------------------------------------------------
     # Signal 8: LLM-reported confusion points (small weight only)
@@ -420,11 +445,21 @@ def compute_friction(session: dict | list[Step] | Any, completed: bool | None = 
         overlaps = (getattr(s, "overlapping_elements", []) if not isinstance(s, dict) else s.get("overlapping_elements", [])) or []
 
         crit_axes = [v for v in axes if v.get("impact") in ("critical", "serious")]
+        # Deduplicate repeating sibling nodes (e.g. split text words) so they count as 1 violation
+        seen_axe_keys: set[tuple[str, str]] = set()
+        unique_crit_axes = []
+        for v in crit_axes:
+            norm = normalize_selector_pattern(v.get("selector", "")) or v.get("selector", "")
+            k = (v.get("id", ""), norm)
+            if k not in seen_axe_keys:
+                seen_axe_keys.add(k)
+                unique_crit_axes.append(v)
+
         crit_taps = [t for t in taps if t.get("width", 44) < 32 or t.get("height", 44) < 32]
         crit_contrasts = [c for c in contrasts if c.get("contrast_ratio", 4.5) < 3.0]
         crit_overlaps = [o for o in overlaps if o.get("overlap_area", 0) > 80]
 
-        step_crit_count = len(crit_axes) + len(crit_taps) + len(crit_contrasts) + len(crit_overlaps)
+        step_crit_count = len(unique_crit_axes) + len(crit_taps) + len(crit_contrasts) + len(crit_overlaps)
         if step_crit_count > 0:
             critical_violation_steps.append(step_n)
             total_critical_violations += step_crit_count

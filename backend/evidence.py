@@ -318,23 +318,74 @@ def draw_red_bounding_box(base64_image: str | None, bbox: dict | None) -> str | 
         return base64_image
 
 
+def normalize_selector_pattern(selector: str | None) -> str:
+    """
+    Normalizes a CSS selector by stripping trailing :nth-child(N) or :nth-of-type(N)
+    and consolidating repeating child patterns (e.g., split-text word spans, list items).
+    Examples:
+      'span:nth-child(1) > .inline-block[data-word="true"]:nth-child(1)' ->
+      'span:nth-child(1) > .inline-block[data-word="true"]'
+      
+      'ul > li:nth-child(3)' ->
+      'ul > li'
+    """
+    if not selector:
+        return ""
+    sel = selector.strip()
+    # Strip trailing :nth-child(\d+) or :nth-of-type(\d+)
+    sel = re.sub(r':nth-(?:child|of-type)\(\d+\)$', '', sel)
+    return sel.strip()
+
+
+def union_bboxes(b1: dict | None, b2: dict | None) -> dict | None:
+    """Computes the union of two bounding boxes to encompass all affected sibling elements."""
+    if not b1 and not b2:
+        return None
+    if not b1:
+        return b2
+    if not b2:
+        return b1
+    try:
+        x1 = min(int(b1.get("x", 0)), int(b2.get("x", 0)))
+        y1 = min(int(b1.get("y", 0)), int(b2.get("y", 0)))
+        x2 = max(
+            int(b1.get("x", 0)) + int(b1.get("width", 0)),
+            int(b2.get("x", 0)) + int(b2.get("width", 0)),
+        )
+        y2 = max(
+            int(b1.get("y", 0)) + int(b1.get("height", 0)),
+            int(b2.get("y", 0)) + int(b2.get("height", 0)),
+        )
+        return {
+            "x": x1,
+            "y": y1,
+            "width": max(10, x2 - x1),
+            "height": max(10, y2 - y1),
+        }
+    except Exception:
+        return b1
+
+
 def _default_fix_from_evidence(finding: dict) -> str:
     """Generates a high-quality deterministic CSS or copy fix suggestion from raw evidence."""
     raw = finding.get("raw_evidence", {})
     ev_type = raw.get("type", "")
     sel = finding.get("selector") or raw.get("selector") or ".interactive-target"
+    occ = raw.get("occurrences", 1)
 
     if ev_type == "tap_target":
         return f"CSS: {sel} {{\n  min-width: 44px;\n  min-height: 44px;\n  padding: 10px 14px;\n  display: inline-flex;\n  align-items: center;\n  justify-content: center;\n}}"
     elif ev_type == "contrast":
-        return f"CSS: {sel} {{\n  color: #0f172a;\n  /* Upgrades contrast to > 7:1 against background for WCAG AA compliance */\n}}"
+        occ_note = f" /* Fixes contrast across {occ} elements in this group */" if occ > 1 else ""
+        return f"CSS: {sel} {{\n  color: #0f172a;{occ_note}\n  /* Upgrades contrast to > 7:1 against background for WCAG AA compliance */\n}}"
     elif ev_type == "overlap":
         with_sel = raw.get("overlaps_with", "neighbor")
         return f"CSS: {sel} {{\n  margin-right: 12px;\n  position: relative;\n  z-index: 10;\n}}\n{with_sel} {{\n  margin-left: 12px;\n}}"
     elif ev_type == "axe":
         axe_id = raw.get("id", "")
         if "contrast" in axe_id:
-            return f"CSS: {sel} {{\n  color: #111827;\n}}"
+            occ_note = f" /* Fixes contrast across {occ} elements in this container */" if occ > 1 else ""
+            return f"CSS: {sel} {{\n  color: #111827;{occ_note}\n}}"
         elif "button" in axe_id or "name" in axe_id or "label" in axe_id:
             return f"HTML: <button aria-label=\"Descriptive Action Label\"> or add inner text to {sel}."
         elif "image" in axe_id or "alt" in axe_id:
@@ -353,6 +404,7 @@ def detect_findings_from_evidence(session: dict | Any) -> list[dict]:
     """
     Automated finding detection from collected step evidence.
     The LLM is strictly excluded from detection; all findings are derived from real evidence.
+    Sibling and split-text elements failing the same rule are consolidated to prevent report pollution.
     """
     if isinstance(session, dict):
         steps = session.get("steps", [])
@@ -364,22 +416,25 @@ def detect_findings_from_evidence(session: dict | Any) -> list[dict]:
         baseline_note = getattr(session, "baseline_note", "")
 
     findings: list[dict] = []
-    seen_keys: set[str] = set()
+    finding_by_key: dict[str, dict] = {}
 
     if baseline_failed:
-        findings.append({
+        b_entry = {
             "title": "Baseline Failure: Objective May Be Unreachable",
             "severity": "critical",
             "step_number": 1,
             "evidence_steps": [1],
             "what_happened": f"The efficient baseline tester was unable to complete the task ({baseline_note or 'task may be unreachable or unclear'}).",
             "impact": "Indicates that the task instructions, starting page, or user flow may be broken or impossible to fulfill.",
-            "recommendation": "Review the task description and target URL to ensure the objective can be completed directly.",
+            "recommendation": "",
             "suggested_fix": "Copy: Clarify entry page links or navigation hierarchy so new users can directly reach the goal.",
             "selector": "body",
             "bounding_box": None,
-            "raw_evidence": {"type": "baseline_failed", "note": baseline_note},
-        })
+            "occurrences": 1,
+            "raw_evidence": {"type": "baseline_failed", "note": baseline_note, "occurrences": 1},
+        }
+        finding_by_key["baseline_failed"] = b_entry
+        findings.append(b_entry)
 
     for s in steps:
         step_n = getattr(s, "n", 1) if not isinstance(s, dict) else s.get("n", 1)
@@ -395,92 +450,148 @@ def detect_findings_from_evidence(session: dict | Any) -> list[dict]:
 
         # 1. Overlapping interactive elements (critical)
         for o in overlaps:
-            key = f"overlap:{o.get('selector')}:{o.get('overlaps_with')}"
-            if key not in seen_keys:
-                seen_keys.add(key)
-                findings.append({
-                    "title": f"Overlapping Elements: {o.get('selector')} & {o.get('overlaps_with')}",
-                    "severity": "critical",
-                    "step_number": step_n,
-                    "evidence_steps": [step_n],
-                    "what_happened": f"Interactive element '{o.get('selector')}' overlaps with '{o.get('overlaps_with')}' by {o.get('overlap_area', 0)}px².",
-                    "impact": "Users attempting to click or tap one control may inadvertently activate the other or encounter dead clicks.",
-                    "recommendation": "",
-                    "suggested_fix": "",
-                    "selector": o.get("selector"),
-                    "bounding_box": o.get("bounding_box"),
-                    "raw_evidence": {"type": "overlap", "selector": o.get("selector"), "overlaps_with": o.get("overlaps_with"), "area": o.get("overlap_area")},
-                })
+            raw_sel = o.get("selector", "")
+            raw_with = o.get("overlaps_with", "")
+            norm_sel = normalize_selector_pattern(raw_sel) or raw_sel
+            norm_with = normalize_selector_pattern(raw_with) or raw_with
+            key = f"overlap:{norm_sel}:{norm_with}"
 
-        # 2. Axe accessibility violations
+            if key in finding_by_key:
+                entry = finding_by_key[key]
+                entry["occurrences"] = entry.get("occurrences", 1) + 1
+                entry["bounding_box"] = union_bboxes(entry.get("bounding_box"), o.get("bounding_box"))
+                if step_n not in entry["evidence_steps"]:
+                    entry["evidence_steps"].append(step_n)
+                continue
+
+            entry = {
+                "title": f"Overlapping Elements: {norm_sel} & {norm_with}",
+                "severity": "critical",
+                "step_number": step_n,
+                "evidence_steps": [step_n],
+                "what_happened": f"Interactive element '{norm_sel}' overlaps with '{norm_with}' by {o.get('overlap_area', 0)}px².",
+                "impact": "Users attempting to click or tap one control may inadvertently activate the other or encounter dead clicks.",
+                "recommendation": "",
+                "suggested_fix": "",
+                "selector": norm_sel,
+                "bounding_box": o.get("bounding_box"),
+                "occurrences": 1,
+                "raw_evidence": {"type": "overlap", "selector": norm_sel, "overlaps_with": norm_with, "area": o.get("overlap_area"), "occurrences": 1},
+            }
+            finding_by_key[key] = entry
+            findings.append(entry)
+
+        # 2. Axe accessibility violations (deduplicated & grouped across sibling/split-text nodes)
         for a in axes:
-            key = f"axe:{a.get('id')}:{a.get('selector')}"
-            if key not in seen_keys:
-                seen_keys.add(key)
-                impact = a.get("impact", "moderate")
-                sev = "critical" if impact in ("critical", "serious") else "high" if impact == "moderate" else "medium"
-                findings.append({
-                    "title": f"Accessibility: {a.get('id')} ({a.get('selector')})",
-                    "severity": sev,
-                    "step_number": step_n,
-                    "evidence_steps": [step_n],
-                    "what_happened": f"Axe automated audit flagged '{a.get('id')}': {a.get('help', '')} on '{a.get('selector', '')}'.",
-                    "impact": f"Fails WCAG guidelines with {impact} severity, impeding accessibility for users.",
-                    "recommendation": "",
-                    "suggested_fix": "",
-                    "selector": a.get("selector"),
-                    "bounding_box": a.get("bounding_box"),
-                    "raw_evidence": {"type": "axe", "id": a.get("id"), "selector": a.get("selector"), "help": a.get("help"), "impact": impact},
-                })
+            raw_sel = a.get("selector", "")
+            norm_sel = normalize_selector_pattern(raw_sel) or raw_sel
+            rule_id = a.get("id", "")
+            key = f"axe:{rule_id}:{norm_sel}"
+
+            if key in finding_by_key:
+                entry = finding_by_key[key]
+                entry["occurrences"] = entry.get("occurrences", 1) + 1
+                occ = entry["occurrences"]
+                entry["title"] = f"Accessibility: {rule_id} ({norm_sel} — {occ} elements)"
+                entry["what_happened"] = f"Axe automated audit flagged '{rule_id}': {a.get('help', '')} across {occ} elements matching '{norm_sel}'."
+                entry["bounding_box"] = union_bboxes(entry.get("bounding_box"), a.get("bounding_box"))
+                if step_n not in entry["evidence_steps"]:
+                    entry["evidence_steps"].append(step_n)
+                entry["raw_evidence"]["occurrences"] = occ
+                continue
+
+            impact = a.get("impact", "moderate")
+            sev = "critical" if impact in ("critical", "serious") else "high" if impact == "moderate" else "medium"
+            entry = {
+                "title": f"Accessibility: {rule_id} ({norm_sel})",
+                "severity": sev,
+                "step_number": step_n,
+                "evidence_steps": [step_n],
+                "what_happened": f"Axe automated audit flagged '{rule_id}': {a.get('help', '')} on '{norm_sel}'.",
+                "impact": f"Fails WCAG guidelines with {impact} severity, impeding accessibility for users.",
+                "recommendation": "",
+                "suggested_fix": "",
+                "selector": norm_sel,
+                "bounding_box": a.get("bounding_box"),
+                "occurrences": 1,
+                "raw_evidence": {"type": "axe", "id": rule_id, "selector": norm_sel, "help": a.get("help"), "impact": impact, "occurrences": 1},
+            }
+            finding_by_key[key] = entry
+            findings.append(entry)
 
         # 3. Tap targets under 44x44px
         for t in taps:
-            key = f"tap:{t.get('selector')}"
-            if key not in seen_keys:
-                seen_keys.add(key)
-                w, h = t.get("width", 0), t.get("height", 0)
-                sev = "high" if (w < 32 or h < 32) else "medium"
-                findings.append({
-                    "title": f"Undersized Touch Target: '{t.get('text') or t.get('selector')}' ({w}x{h}px)",
-                    "severity": sev,
-                    "step_number": step_n,
-                    "evidence_steps": [step_n],
-                    "what_happened": f"Interactive control '{t.get('text') or t.get('selector')}' is {w}x{h}px, below the recommended 44x44px target size.",
-                    "impact": "Increases mis-taps, interaction friction, and rage clicks on mobile and touch devices.",
-                    "recommendation": "",
-                    "suggested_fix": "",
-                    "selector": t.get("selector"),
-                    "bounding_box": t.get("bounding_box"),
-                    "raw_evidence": {"type": "tap_target", "selector": t.get("selector"), "width": w, "height": h, "text": t.get("text")},
-                })
+            raw_sel = t.get("selector", "")
+            norm_sel = normalize_selector_pattern(raw_sel) or raw_sel
+            key = f"tap:{norm_sel}"
+
+            if key in finding_by_key:
+                entry = finding_by_key[key]
+                entry["occurrences"] = entry.get("occurrences", 1) + 1
+                entry["bounding_box"] = union_bboxes(entry.get("bounding_box"), t.get("bounding_box"))
+                if step_n not in entry["evidence_steps"]:
+                    entry["evidence_steps"].append(step_n)
+                continue
+
+            w, h = t.get("width", 0), t.get("height", 0)
+            sev = "high" if (w < 32 or h < 32) else "medium"
+            entry = {
+                "title": f"Undersized Touch Target: '{t.get('text') or norm_sel}' ({w}x{h}px)",
+                "severity": sev,
+                "step_number": step_n,
+                "evidence_steps": [step_n],
+                "what_happened": f"Interactive control '{t.get('text') or norm_sel}' is {w}x{h}px, below the recommended 44x44px target size.",
+                "impact": "Increases mis-taps, interaction friction, and rage clicks on mobile and touch devices.",
+                "recommendation": "",
+                "suggested_fix": "",
+                "selector": norm_sel,
+                "bounding_box": t.get("bounding_box"),
+                "occurrences": 1,
+                "raw_evidence": {"type": "tap_target", "selector": norm_sel, "width": w, "height": h, "text": t.get("text"), "occurrences": 1},
+            }
+            finding_by_key[key] = entry
+            findings.append(entry)
 
         # 4. Low-contrast text
         for c in contrasts:
-            key = f"contrast:{c.get('selector')}"
-            if key not in seen_keys:
-                seen_keys.add(key)
-                ratio = c.get("contrast_ratio", 0)
-                sev = "high" if ratio < 3.0 else "medium"
-                findings.append({
-                    "title": f"Low Contrast Text: {ratio}:1 on '{c.get('text')}'",
-                    "severity": sev,
-                    "step_number": step_n,
-                    "evidence_steps": [step_n],
-                    "what_happened": f"Text '{c.get('text')}' has a contrast ratio of {ratio}:1 against background (minimum required is {c.get('min_ratio', 4.5)}:1).",
-                    "impact": "Fails accessibility contrast thresholds, making copy illegible in bright environments or for impaired vision.",
-                    "recommendation": "",
-                    "suggested_fix": "",
-                    "selector": c.get("selector"),
-                    "bounding_box": c.get("bounding_box"),
-                    "raw_evidence": {"type": "contrast", "selector": c.get("selector"), "contrast_ratio": ratio, "fg": c.get("fg_color")},
-                })
+            raw_sel = c.get("selector", "")
+            norm_sel = normalize_selector_pattern(raw_sel) or raw_sel
+            key = f"contrast:{norm_sel}"
+
+            if key in finding_by_key:
+                entry = finding_by_key[key]
+                entry["occurrences"] = entry.get("occurrences", 1) + 1
+                occ = entry["occurrences"]
+                entry["bounding_box"] = union_bboxes(entry.get("bounding_box"), c.get("bounding_box"))
+                entry["title"] = f"Low Contrast Text ({occ} elements): {c.get('contrast_ratio', 0)}:1 on '{norm_sel}'"
+                if step_n not in entry["evidence_steps"]:
+                    entry["evidence_steps"].append(step_n)
+                continue
+
+            ratio = c.get("contrast_ratio", 0)
+            sev = "high" if ratio < 3.0 else "medium"
+            entry = {
+                "title": f"Low Contrast Text: {ratio}:1 on '{c.get('text')}'",
+                "severity": sev,
+                "step_number": step_n,
+                "evidence_steps": [step_n],
+                "what_happened": f"Text '{c.get('text')}' has a contrast ratio of {ratio}:1 against background (minimum required is {c.get('min_ratio', 4.5)}:1).",
+                "impact": "Fails accessibility contrast thresholds, making copy illegible in bright environments or for impaired vision.",
+                "recommendation": "",
+                "suggested_fix": "",
+                "selector": norm_sel,
+                "bounding_box": c.get("bounding_box"),
+                "occurrences": 1,
+                "raw_evidence": {"type": "contrast", "selector": norm_sel, "contrast_ratio": ratio, "fg": c.get("fg_color"), "occurrences": 1},
+            }
+            finding_by_key[key] = entry
+            findings.append(entry)
 
         # 5. Dead clicks
         if dead_click:
             key = f"dead_click:{target or label}"
-            if key not in seen_keys:
-                seen_keys.add(key)
-                findings.append({
+            if key not in finding_by_key:
+                entry = {
                     "title": f"Unresponsive Target: Dead Click on '{label or target}'",
                     "severity": "high",
                     "step_number": step_n,
@@ -491,16 +602,18 @@ def detect_findings_from_evidence(session: dict | Any) -> list[dict]:
                     "suggested_fix": "",
                     "selector": target,
                     "bounding_box": None,
-                    "raw_evidence": {"type": "dead_click", "label": label, "target": target},
-                })
+                    "occurrences": 1,
+                    "raw_evidence": {"type": "dead_click", "label": label, "target": target, "occurrences": 1},
+                }
+                finding_by_key[key] = entry
+                findings.append(entry)
 
         # 6. Technical errors
         if c_errs or n_errs:
             key = f"tech_error:{step_n}"
-            if key not in seen_keys:
-                seen_keys.add(key)
+            if key not in finding_by_key:
                 err_sample = (c_errs + n_errs)[0][:100]
-                findings.append({
+                entry = {
                     "title": f"Technical Runtime Failure at Step {step_n}",
                     "severity": "high",
                     "step_number": step_n,
@@ -511,20 +624,45 @@ def detect_findings_from_evidence(session: dict | Any) -> list[dict]:
                     "suggested_fix": "",
                     "selector": "script",
                     "bounding_box": None,
-                    "raw_evidence": {"type": "error", "console": c_errs[:2], "network": n_errs[:2]},
-                })
+                    "occurrences": 1,
+                    "raw_evidence": {"type": "error", "console": c_errs[:2], "network": n_errs[:2], "occurrences": 1},
+                }
+                finding_by_key[key] = entry
+                findings.append(entry)
 
-    # Sort by severity: critical -> high -> medium
+    # Sort by severity: critical -> high -> medium -> low
     sev_rank = {"critical": 3, "high": 2, "medium": 1, "low": 0}
     findings.sort(key=lambda f: sev_rank.get(f.get("severity", ""), 0), reverse=True)
+
+    # Diversity filter: Allow at most 2 findings of the exact same category/rule in top 5
+    # so a repetitive issue doesn't push out other distinct usability defects
+    selected_findings: list[dict] = []
+    type_counts: dict[str, int] = {}
+    deferred: list[dict] = []
+
+    for f in findings:
+        raw_t = f.get("raw_evidence", {}).get("type", "unknown")
+        rule_sub = f.get("raw_evidence", {}).get("id", "")
+        cat_key = f"{raw_t}:{rule_sub}" if rule_sub else raw_t
+        if type_counts.get(cat_key, 0) < 2:
+            selected_findings.append(f)
+            type_counts[cat_key] = type_counts.get(cat_key, 0) + 1
+        else:
+            deferred.append(f)
+
+    for f in deferred:
+        if len(selected_findings) >= 5:
+            break
+        selected_findings.append(f)
+
+    findings = selected_findings[:5]
 
     # Attach deterministic default fix initially
     for f in findings:
         f["suggested_fix"] = _default_fix_from_evidence(f)
         f["recommendation"] = f["suggested_fix"]
 
-    # Limit to top 5 most actionable findings
-    return findings[:5]
+    return findings
 
 
 def attach_screenshots_with_bounding_boxes(findings: list[dict], steps: list[Any]) -> None:

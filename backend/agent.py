@@ -1085,16 +1085,10 @@ async def run_agent_loop(
         if (time.time() - session_start_time) > effective_max_duration:
             stop_reason_dur = f"Maximum session duration ({int(effective_max_duration)}s) exceeded."
             await queue.put({"thought": f"Step {step + 1} · [Security Guard] {stop_reason_dur}"})
-            should_stop, outcome, reason_str = evaluate_stop_rules(
-                step=step + 1,
-                max_steps=effective_max_steps,
-                is_abort_claimed=True,
-                stop_reason=stop_reason_dur,
-            )
-            claimed_outcome = outcome
-            verified_outcome = outcome
-            final_outcome = outcome
-            final_outcome_reason = reason_str
+            final_outcome = "timeout"
+            final_outcome_reason = f"Session timed out: {stop_reason_dur}"
+            claimed_outcome = "timeout"
+            verified_outcome = "timeout"
             break
 
         await settle(page, extra=persona_cfg.timeouts.get("settle_timeout", 0.5))
@@ -1278,35 +1272,60 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
                     "thought": f"{tag}Aborting: All LLM providers and fallbacks unavailable ({unavail_err})",
                     "screenshot": base64_image
                 })
-                # End the session with status "aborted_llm_unavailable" and still save the partial report
+                is_beginning = (len(steps) == 0)
+                # End the session and compute score based on findings up to then if steps exist
                 score = compute_friction({
                     "steps": steps,
-                    "outcome": OUTCOME_ERROR,
+                    "outcome": "error" if is_beginning else "system_error",
                     "outcome_reason": f"All LLM providers and fallbacks unavailable ({unavail_err})",
+                    "is_system_error": True,
                     "completed": False,
                 })
+                
+                detected_findings = detect_findings_from_evidence({"steps": steps}) if steps else []
+                if is_beginning:
+                    findings_list = [
+                        {
+                            "title": "Test Failed to Start: AI Provider Unavailable",
+                            "severity": "critical",
+                            "evidence_steps": [],
+                            "what_happened": f"Rate limits or provider connection failures prevented the agent from starting: {unavail_err}",
+                            "impact": "No steps could be executed on the target application.",
+                            "recommendation": "Check API keys or secondary provider configuration in .env and rerun the test.",
+                        }
+                    ]
+                else:
+                    findings_list = list(detected_findings) + [
+                        {
+                            "title": "Audit Interrupted: AI Provider Outage",
+                            "severity": "info",
+                            "evidence_steps": [s.n for s in steps] if steps else [],
+                            "what_happened": f"Testing concluded early at step {len(steps)} due to AI provider outage: {unavail_err}",
+                            "impact": f"Evaluated UX through {len(steps)} step(s). Score reflects findings up to this point.",
+                            "recommendation": "Review findings up to step {len(steps)} or rerun test when AI provider limits reset.",
+                        }
+                    ]
+
                 partial_report = {
                     "session_id": session_id,
                     "url": session_data.get("url", page.url) if session_data else page.url,
                     "task": task,
                     "persona": persona,
                     "status": "aborted_llm_unavailable",
-                    "outcome": OUTCOME_ERROR,
+                    "error_at_beginning": is_beginning,
+                    "prompt_rerun": is_beginning,
+                    "rerun_prompt": f"The test could not start because AI providers were unavailable: {unavail_err}. Please check your API keys and rerun the test." if is_beginning else None,
+                    "outcome": "error" if is_beginning else "system_error",
                     "outcome_reason": f"All LLM providers and fallbacks unavailable ({unavail_err})",
-                    "claimed_outcome": OUTCOME_ERROR,
-                    "verified_outcome": OUTCOME_ERROR,
+                    "claimed_outcome": "error" if is_beginning else "system_error",
+                    "verified_outcome": "error" if is_beginning else "system_error",
                     "score": score,
-                    "verdict": "Session aborted: AI testing engine became unavailable due to rate limits across all providers. Partial progress was recorded.",
-                    "findings": [
-                        {
-                            "title": "Session Interrupted by LLM Outage",
-                            "severity": "critical",
-                            "evidence_steps": [s.n for s in steps] if steps else [],
-                            "what_happened": "Rate limits or provider connection failures prevented the agent from finishing.",
-                            "impact": "Test stopped prematurely before full user testing could conclude.",
-                            "recommendation": "Check API keys or secondary provider configuration in .env.",
-                        }
-                    ],
+                    "verdict": (
+                        f"Session aborted: AI testing engine became unavailable ({unavail_err}). Please check configuration and rerun the test."
+                        if is_beginning
+                        else f"Session aborted: AI testing engine became unavailable at step {len(steps)} due to rate limits across all providers. Score ({score['total']}/100) reflects findings observed up to this step."
+                    ),
+                    "findings": findings_list,
                     "bugs": sum(1 for s in steps if s.friction_type == "bug"),
                     "actions": [
                         {
@@ -1327,23 +1346,34 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
                 if session_data is not None:
                     session_data["report"] = partial_report
                     session_data["status"] = "aborted_llm_unavailable"
-                    session_data["outcome"] = OUTCOME_ERROR
+                    session_data["error_at_beginning"] = is_beginning
+                    session_data["prompt_rerun"] = is_beginning
+                    session_data["rerun_prompt"] = partial_report.get("rerun_prompt")
+                    session_data["outcome"] = partial_report["outcome"]
                     session_data["outcome_reason"] = f"LLM unavailable: {unavail_err}"
-                    session_data["claimed_outcome"] = OUTCOME_ERROR
-                    session_data["verified_outcome"] = OUTCOME_ERROR
+                    session_data["claimed_outcome"] = partial_report["claimed_outcome"]
+                    session_data["verified_outcome"] = partial_report["verified_outcome"]
 
                 LAST_REPORT.clear()
                 LAST_REPORT.update(partial_report)
-                await queue.put({"thought": "Agent loop aborted due to LLM unavailability."})
+                await queue.put({
+                    "thought": "Agent loop aborted due to LLM unavailability.",
+                    "error_at_beginning": is_beginning,
+                    "prompt_rerun": is_beginning,
+                    "rerun_prompt": partial_report.get("rerun_prompt"),
+                })
                 if emit_done:
                     await queue.put({
                         "done": True,
                         "session_id": session_id,
                         "status": "aborted_llm_unavailable",
-                        "outcome": OUTCOME_ERROR,
+                        "error_at_beginning": is_beginning,
+                        "prompt_rerun": is_beginning,
+                        "rerun_prompt": partial_report.get("rerun_prompt"),
+                        "outcome": partial_report["outcome"],
                         "outcome_reason": f"LLM unavailable: {unavail_err}",
-                        "claimed_outcome": OUTCOME_ERROR,
-                        "verified_outcome": OUTCOME_ERROR,
+                        "claimed_outcome": partial_report["claimed_outcome"],
+                        "verified_outcome": partial_report["verified_outcome"],
                     })
                 return partial_report
             except Exception as parse_err:
@@ -1731,19 +1761,12 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
             # If unexpected error occurred, continue loop unless repeated
             consecutive_errors += 1
             if consecutive_errors >= 3:
-                should_stop, outcome, reason_str = evaluate_stop_rules(
-                    step=step + 1,
-                    max_steps=max_steps,
-                    consecutive_errors=consecutive_errors,
-                    max_consecutive_errors=3,
-                    stop_reason=f"Execution halted due to repeated agent errors: {str(e)[:160]}",
-                )
-                claimed_outcome = outcome
-                verified_outcome = outcome
-                final_outcome = outcome
-                final_outcome_reason = reason_str
+                final_outcome = "system_error"
+                final_outcome_reason = f"Execution halted due to repeated agent errors: {str(e)[:160]}"
+                claimed_outcome = "system_error"
+                verified_outcome = "system_error"
                 await queue.put({
-                    "thought": f"{tag}Aborting task after repeated execution errors.",
+                    "thought": f"{tag}Aborting task after repeated execution errors: {str(e)[:160]}",
                     "screenshot": base64_image,
                     "claimed_outcome": claimed_outcome,
                     "verified_outcome": verified_outcome,
@@ -1776,6 +1799,7 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
         "status": "completed" if completed else final_outcome,
         "outcome": final_outcome,
         "outcome_reason": final_outcome_reason,
+        "is_system_error": (final_outcome in ("timeout", "system_error")),
         "claimed_outcome": claimed_outcome,
         "verified_outcome": verified_outcome,
         "steps": steps,
@@ -1793,10 +1817,12 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
     except Exception as e:
         print(f"Report generation failed: {e}")
         score_data = compute_friction(session_dict)
+        findings_from_evidence = detect_findings_from_evidence(session_dict)
+        attach_screenshots_with_bounding_boxes(findings_from_evidence, steps)
         report = {
             "score": score_data,
-            "verdict": f"The session completed with {score_data['label'].lower()} friction ({score_data['score']}/100). Deterministic breakdown computed successfully. Clearly fake form data (for example test@example.com) was used.",
-            "findings": [],
+            "verdict": f"The session completed with {score_data['label'].lower()} friction ({score_data['score']}/100). Deterministic breakdown computed successfully.",
+            "findings": findings_from_evidence,
             "baseline_failed": session_dict["baseline_failed"],
             "baseline_note": session_dict["baseline_note"],
             "fake_data_used": True,
@@ -1861,9 +1887,28 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
         for s in steps
     ]
 
+    is_beginning = (len(steps) == 0)
+    if is_beginning and (final_outcome in ("timeout", "system_error", "error")):
+        report["error_at_beginning"] = True
+        report["status"] = "error_at_beginning"
+        report["prompt_rerun"] = True
+        report["rerun_prompt"] = f"An error occurred before testing could start: {final_outcome_reason or 'No steps could be executed'}. Please check your target URL and rerun the test."
+        if not report.get("findings"):
+            report["findings"] = [{
+                "title": "Test Failed to Start",
+                "severity": "critical",
+                "evidence_steps": [],
+                "what_happened": f"An error occurred before testing could begin: {final_outcome_reason or 'No steps could be executed'}",
+                "impact": "No steps could be executed on the target application.",
+                "recommendation": "Check that the target server is running and accessible, then rerun the test.",
+            }]
+
     if session_data is not None:
         session_data["report"] = report
-        session_data["status"] = "completed"
+        session_data["status"] = report.get("status", "completed")
+        session_data["error_at_beginning"] = report.get("error_at_beginning", False)
+        session_data["prompt_rerun"] = report.get("prompt_rerun", False)
+        session_data["rerun_prompt"] = report.get("rerun_prompt")
         session_data["outcome"] = final_outcome
         session_data["outcome_reason"] = final_outcome_reason
         session_data["claimed_outcome"] = claimed_outcome
@@ -1876,6 +1921,10 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
         await queue.put({
             "done": True,
             "session_id": session_id,
+            "status": report.get("status", "completed"),
+            "error_at_beginning": report.get("error_at_beginning", False),
+            "prompt_rerun": report.get("prompt_rerun", False),
+            "rerun_prompt": report.get("rerun_prompt"),
             "outcome": final_outcome,
             "outcome_reason": final_outcome_reason,
             "claimed_outcome": claimed_outcome,

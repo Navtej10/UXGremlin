@@ -11,6 +11,94 @@
     ],
     "completed": true,
     "error": "",
-    "timestamp": 1792163670.4577398
+    "timestamp": 1792174437.14455
+  },
+  "https://www.expantra.me||navigate to the contact section and try to mail the company": {
+    "url": "https://www.expantra.me/",
+    "task": "navigate to the contact section and try to mail the company",
+    "expected_steps": 2,
+    "path": [
+      {
+        "step": 1,
+        "action": "click",
+        "target": "Start Your Project",
+        "url": "https://www.expantra.me/"
+      },
+      {
+        "step": 2,
+        "action": "click",
+        "target": "EMAIL US expantradigiserve@gmail.com",
+        "url": "https://www.expantra.me/contact"
+      }
+    ],
+    "completed": true,
+    "error": "",
+    "timestamp": 1792164474.0394187
+  },
+  "https://www.expantra.me||try to contact the company": {
+    "url": "https://www.expantra.me/",
+    "task": "try to contact the company",
+    "expected_steps": 2,
+    "path": [
+      {
+        "step": 1,
+        "action": "click",
+        "target": "Book a Call",
+        "url": "https://www.expantra.me/"
+      },
+      {
+        "step": 2,
+        "action": "done",
+        "target": "EXPANTRA",
+        "url": "https://www.expantra.me/contact"
+      }
+    ],
+    "completed": true,
+    "error": "",
+    "timestamp": 1792166234.1196978
+  },
+  "https://www.expantra.me||navigate to the contact section": {
+    "url": "https://www.expantra.me/",
+    "task": "navigate to the contact section",
+    "expected_steps": 2,
+    "path": [
+      {
+        "step": 1,
+        "action": "click",
+        "target": "Start Your Project",
+        "url": "https://www.expantra.me/"
+      },
+      {
+        "step": 2,
+        "action": "done",
+        "target": "None",
+        "url": "https://www.expantra.me/contact"
+      }
+    ],
+    "completed": true,
+    "error": "",
+    "timestamp": 1792168207.6468954
+  },
+  "https://www.expantra.me||contact page": {
+    "url": "https://www.expantra.me/",
+    "task": "contact page",
+    "expected_steps": 2,
+    "path": [
+      {
+        "step": 1,
+        "action": "click",
+        "target": "Start Your Project",
+        "url": "https://www.expantra.me/"
+      },
+      {
+        "step": 2,
+        "action": "done",
+        "target": "EXPANTRA",
+        "url": "https://www.expantra.me/contact"
+      }
+    ],
+    "completed": true,
+    "error": "",
+    "timestamp": 1792173702.1327674
   }
 }

@@ -18,7 +18,7 @@ interface PersonaLaneState {
   personaId: string;
   thoughts: string[];
   currentScreenshot: string | null;
-  status: 'pending' | 'running' | 'completed' | 'abandoned' | 'gave_up' | 'error';
+  status: 'pending' | 'running' | 'completed' | 'abandoned' | 'gave_up' | 'error' | 'timeout' | 'system_error';
   currentStep: number;
   latestAction: string;
   history: HistoryItem[];
@@ -108,7 +108,7 @@ export function MultiLaneLiveDashboard({ session, onComplete }: MultiLaneLiveDas
             let updatedStatus = lane.status;
             if (data.persona_done || data.outcome === 'completed') {
               updatedStatus = 'completed';
-            } else if (data.outcome && ['abandoned', 'gave_up', 'error'].includes(data.outcome)) {
+            } else if (data.outcome && ['abandoned', 'gave_up', 'error', 'timeout', 'system_error'].includes(data.outcome)) {
               updatedStatus = data.outcome;
             }
 
@@ -293,6 +293,14 @@ export function MultiLaneLiveDashboard({ session, onComplete }: MultiLaneLiveDas
                     ) : lane.status === 'abandoned' || lane.status === 'gave_up' ? (
                       <span className="text-[10px] uppercase font-bold font-mono px-2 py-0.5 rounded bg-rose-950 border border-rose-500/50 text-rose-400">
                         {lane.status}
+                      </span>
+                    ) : lane.status === 'timeout' || lane.status === 'system_error' ? (
+                      <span className="text-[10px] uppercase font-bold font-mono px-2 py-0.5 rounded bg-amber-950 border border-amber-500/50 text-amber-400">
+                        {lane.status === 'timeout' ? 'timeout' : 'interrupted'}
+                      </span>
+                    ) : lane.status === 'error' ? (
+                      <span className="text-[10px] uppercase font-bold font-mono px-2 py-0.5 rounded bg-rose-950 border border-rose-500/50 text-rose-400">
+                        error
                       </span>
                     ) : (
                       <span className="text-[10px] uppercase font-bold font-mono px-2 py-0.5 rounded bg-gremlin-purple/20 border border-gremlin-purple/40 text-gremlin-green flex items-center gap-1.5">

@@ -12,6 +12,8 @@ from evidence import (
     draw_red_bounding_box,
     detect_findings_from_evidence,
     generate_suggested_fixes,
+    normalize_selector_pattern,
+    union_bboxes,
 )
 
 
@@ -196,3 +198,94 @@ def test_report_attaches_step_screenshot_bounding_box_and_llm_fix():
     assert "CSS:" in f["suggested_fix"]
     # And verdict came from LLM
     assert "touch target friction" in report["verdict"]
+
+
+def test_normalize_selector_pattern():
+    """Verify that trailing :nth-child and :nth-of-type indexes are stripped to group sibling nodes."""
+    raw1 = 'span:nth-child(1) > .inline-block[data-word="true"]:nth-child(1)'
+    raw2 = 'span:nth-child(1) > .inline-block[data-word="true"]:nth-child(4)'
+    assert normalize_selector_pattern(raw1) == 'span:nth-child(1) > .inline-block[data-word="true"]'
+    assert normalize_selector_pattern(raw2) == 'span:nth-child(1) > .inline-block[data-word="true"]'
+
+    assert normalize_selector_pattern('ul > li:nth-child(3)') == 'ul > li'
+    assert normalize_selector_pattern('button[type="submit"]') == 'button[type="submit"]'
+
+
+def test_union_bboxes():
+    """Verify union_bboxes accurately computes the outer bounding box enclosing all sibling elements."""
+    b1 = {"x": 10, "y": 20, "width": 50, "height": 30}
+    b2 = {"x": 70, "y": 15, "width": 40, "height": 40}
+
+    union = union_bboxes(b1, b2)
+    assert union["x"] == 10
+    assert union["y"] == 15
+    # right edge is max(10+50, 70+40) = 110 -> width = 110 - 10 = 100
+    assert union["width"] == 100
+    # bottom edge is max(20+30, 15+40) = 55 -> height = 55 - 15 = 40
+    assert union["height"] == 40
+
+
+def test_grouping_split_text_color_contrast_findings():
+    """
+    Verify the user's exact case:
+    1 button[type='submit'] missing discernible text + 4 word spans failing color-contrast.
+    Must be consolidated into exactly 2 findings:
+    1 for button-name, 1 for color-contrast with occurrences=4 and unioned bounding box.
+    """
+    word_nodes = [
+        {
+            "id": "color-contrast",
+            "impact": "serious",
+            "selector": f'span:nth-child(1) > .inline-block[data-word="true"]:nth-child({i})',
+            "help": "Elements must meet minimum color contrast ratio thresholds",
+            "bounding_box": {"x": 10 + i * 50, "y": 30, "width": 45, "height": 25},
+        }
+        for i in range(1, 5)
+    ]
+    button_node = {
+        "id": "button-name",
+        "impact": "critical",
+        "selector": 'button[type="submit"]',
+        "help": "Buttons must have discernible text",
+        "bounding_box": {"x": 200, "y": 100, "width": 40, "height": 40},
+    }
+
+    steps = [
+        Step(
+            n=1,
+            url="https://example.com",
+            action="submit",
+            label="Submit",
+            ok=True,
+            axe_violations=[button_node] + word_nodes,
+        )
+    ]
+    session = {"steps": steps, "outcome": "completed"}
+
+    findings = detect_findings_from_evidence(session)
+
+    # Must produce exactly 2 findings (not 5)
+    assert len(findings) == 2
+
+    # Find the contrast finding
+    contrast_f = next(f for f in findings if "color-contrast" in f["title"])
+    assert contrast_f["occurrences"] == 4
+    assert contrast_f["selector"] == 'span:nth-child(1) > .inline-block[data-word="true"]'
+    assert "4 elements" in contrast_f["title"]
+    assert "across 4 elements" in contrast_f["what_happened"]
+
+    # Bounding box should span all 4 words
+    assert contrast_f["bounding_box"]["x"] == 60  # 10 + 1 * 50
+    assert contrast_f["bounding_box"]["width"] >= 195
+
+    # Button finding should be separate
+    btn_f = next(f for f in findings if "button-name" in f["title"])
+    assert btn_f["occurrences"] == 1
+    assert btn_f["selector"] == 'button[type="submit"]'
+
+    # Verify Signal 9 scoring penalty counts unique violations
+    friction = compute_friction(session)
+    crit_part = next(p for p in friction["breakdown"] if p["name"] == "Critical UI/A11y Violations")
+    # 2 unique violations (button-name + color-contrast), not 5!
+    assert crit_part["points"] == 8  # 2 * WEIGHT_CRITICAL_VIOLATION (4)
+

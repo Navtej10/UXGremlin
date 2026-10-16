@@ -10,7 +10,8 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.async_api import async_playwright
 from agent import run_agent_loop, LAST_REPORT
-from scoring import aggregate_run_reports
+from scoring import aggregate_run_reports, compute_friction
+from evidence import detect_findings_from_evidence, attach_screenshots_with_bounding_boxes
 from personas import get_persona_config, PERSONAS
 from security import (
     validate_target_url,
@@ -282,6 +283,86 @@ def _aggregate_comparison(persona_reports: dict, personas: list[str]) -> tuple[d
     return comparison, comparison_summary
 
 
+def _handle_run_exception(p_id: str, exc: Exception, steps: list, target_url: str) -> dict:
+    err_str = str(exc)
+    is_timeout = "timeout" in err_str.lower()
+    is_beginning = (len(steps) == 0)
+
+    if is_beginning:
+        return {
+            "persona": p_id,
+            "status": "error_at_beginning",
+            "error_at_beginning": True,
+            "prompt_rerun": True,
+            "rerun_prompt": f"The test could not start due to an error: {err_str}. Please verify that the target URL is accessible and rerun the test.",
+            "error": err_str,
+            "outcome": "error",
+            "outcome_reason": f"Failed to start: {err_str}",
+            "score": {
+                "score": 0,
+                "total": 0,
+                "label": "Error",
+                "parts": [],
+                "breakdown": [],
+                "steps_taken": 0,
+                "ideal_steps": 1,
+            },
+            "findings": [{
+                "title": "Test Failed to Start",
+                "severity": "critical",
+                "evidence_steps": [],
+                "what_happened": f"An error occurred before testing could begin: {err_str}",
+                "impact": "No steps could be executed on the target application.",
+                "recommendation": "Check that the target server is running and accessible, then rerun the test.",
+            }],
+            "actions": [],
+            "verdict": f"The test failed to start: {err_str}. Please check the target application and rerun the test.",
+        }
+    else:
+        # Score based strictly on findings and evidence up to then!
+        score = compute_friction({
+            "steps": steps,
+            "outcome": "timeout" if is_timeout else "system_error",
+            "outcome_reason": err_str,
+            "is_system_error": True,
+        })
+        findings = detect_findings_from_evidence({"steps": steps})
+        attach_screenshots_with_bounding_boxes(findings, steps)
+        findings.append({
+            "title": f"Audit Interrupted: {'Timeout' if is_timeout else 'System Error'}",
+            "severity": "info",
+            "evidence_steps": [getattr(s, "n", i + 1) if not isinstance(s, dict) else s.get("n", i + 1) for i, s in enumerate(steps)],
+            "what_happened": f"Audit concluded early at step {len(steps)} due to {'timeout' if is_timeout else 'system error'}: {err_str}",
+            "impact": f"Evaluated UX through {len(steps)} step(s). Score reflects findings up to this point.",
+            "recommendation": f"Review findings up to step {len(steps)} or rerun test to proceed further.",
+        })
+        actions = [
+            {
+                "step_number": getattr(s, "n", i + 1) if not isinstance(s, dict) else s.get("n", i + 1),
+                "action": getattr(s, "action", "") if not isinstance(s, dict) else s.get("action", ""),
+                "target": getattr(s, "label", "") if not isinstance(s, dict) else s.get("label", ""),
+                "thought": getattr(s, "thought", "") if not isinstance(s, dict) else s.get("thought", ""),
+                "screenshot": getattr(s, "screenshot", None) if not isinstance(s, dict) else s.get("screenshot"),
+                "ok": getattr(s, "ok", False) if not isinstance(s, dict) else s.get("ok", False),
+                "url": getattr(s, "url", "") if not isinstance(s, dict) else s.get("url", ""),
+                "url_after": getattr(s, "url_after", "") if not isinstance(s, dict) else s.get("url_after", ""),
+                "friction_type": getattr(s, "friction_type", None) if not isinstance(s, dict) else s.get("friction_type"),
+                "friction_note": getattr(s, "friction_note", "") if not isinstance(s, dict) else s.get("friction_note", ""),
+            }
+            for i, s in enumerate(steps)
+        ]
+        return {
+            "persona": p_id,
+            "status": "timeout" if is_timeout else "system_error",
+            "outcome": "timeout" if is_timeout else "system_error",
+            "outcome_reason": f"Interrupted at step {len(steps)}: {err_str}",
+            "score": score,
+            "findings": findings,
+            "actions": actions,
+            "verdict": f"The test concluded early at step {len(steps)} due to {'timeout' if is_timeout else 'system error'}. Score ({score['total']}/100) is based on findings up to that point.",
+        }
+
+
 async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: str):
     """Async work that runs inside the Playwright thread's own loop."""
     print(f"Launching browser for URL: {req.url} (session: {session_id})")
@@ -375,29 +456,19 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
                             return p_id, rep, persona_sess
                         except Exception as e:
                             print(f"Error in persona {p_id}: {e}")
+                            steps = persona_sess.get("steps", [])
+                            err_rep = _handle_run_exception(p_id, e, steps, target_url)
                             await p_adapter.put({
-                                "thought": f"Persona {p_id} encountered error: {e}",
+                                "thought": f"Persona {p_id} encountered {'error' if len(steps) == 0 else 'early ending'}: {e}",
                                 "error": str(e),
+                                "error_at_beginning": err_rep.get("error_at_beginning", False),
+                                "prompt_rerun": err_rep.get("prompt_rerun", False),
+                                "rerun_prompt": err_rep.get("rerun_prompt"),
                                 "persona_id": p_id,
                                 "persona": p_id,
                                 "persona_done": True,
                                 "session_id": session_id,
                             })
-                            err_rep = {
-                                "persona": p_id,
-                                "outcome": "error",
-                                "outcome_reason": str(e),
-                                "score": {"total": 100, "label": "Severe", "parts": [], "steps_taken": len(persona_sess.get("steps", [])), "ideal_steps": 1},
-                                "findings": [{
-                                    "title": f"Execution Error ({p_id})",
-                                    "severity": "critical",
-                                    "evidence_steps": [],
-                                    "what_happened": f"Agent crashed or timed out: {e}",
-                                    "impact": "Incomplete audit",
-                                    "recommendation": "Check target stability or retry",
-                                }],
-                                "actions": [],
-                            }
                             return p_id, err_rep, persona_sess
                         finally:
                             try:
@@ -460,6 +531,16 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
                     "baseline_failed": sess.get("baseline_failed", False) if sess else False,
                     "baseline_note": sess.get("baseline_note", "") if sess else "",
                 }
+
+                is_all_beginning_error = all(r.get("error_at_beginning") for r in persona_reports.values()) if persona_reports else False
+                if is_all_beginning_error:
+                    first_err = next((r.get("error") for r in persona_reports.values() if r.get("error")), "An error occurred before testing could start.")
+                    final_report["status"] = "error_at_beginning"
+                    final_report["error_at_beginning"] = True
+                    final_report["prompt_rerun"] = True
+                    final_report["error"] = first_err
+                    final_report["rerun_prompt"] = f"The test could not start due to an error: {first_err}. Please check your target URL and rerun the test."
+                    final_report["verdict"] = f"The test could not start: {first_err}. Please verify the target application and rerun the test."
             else:
                 p_id = personas[0]
                 total_runs = max(1, min(3, int(getattr(req, "runs", 1) or 1)))
@@ -487,7 +568,6 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
                     page = await context.new_page()
                     await setup_route_interception(page)
                     await setup_download_and_file_guards(page)
-                    await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
 
                     run_sess = {
                         "session_id": session_id,
@@ -501,17 +581,31 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
                         "steps": [],
                     }
 
-                    report = await run_agent_loop(
-                        page,
-                        req.task,
-                        p_id,
-                        p_adapter,
-                        max_steps=getattr(req, "max_steps", None) or 15,
-                        max_duration=getattr(req, "max_duration", None) or MAX_SESSION_DURATION_SECONDS,
-                        session_id=session_id,
-                        session_data=run_sess,
-                        emit_done=False,
-                    )
+                    try:
+                        await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                        report = await run_agent_loop(
+                            page,
+                            req.task,
+                            p_id,
+                            p_adapter,
+                            max_steps=getattr(req, "max_steps", None) or 15,
+                            max_duration=getattr(req, "max_duration", None) or MAX_SESSION_DURATION_SECONDS,
+                            session_id=session_id,
+                            session_data=run_sess,
+                            emit_done=False,
+                        )
+                    except Exception as e:
+                        print(f"Error in single run: {e}")
+                        steps = run_sess.get("steps", [])
+                        report = _handle_run_exception(p_id, e, steps, target_url)
+                        await p_adapter.put({
+                            "thought": f"Run encountered {'error' if len(steps) == 0 else 'early ending'}: {e}",
+                            "error": str(e),
+                            "error_at_beginning": report.get("error_at_beginning", False),
+                            "prompt_rerun": report.get("prompt_rerun", False),
+                            "rerun_prompt": report.get("rerun_prompt"),
+                            "session_id": session_id,
+                        })
 
                     if report:
                         run_reports.append(report)
@@ -537,10 +631,24 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
                 else:
                     final_report = sess.get("report") if sess else {}
 
-                comparison, comparison_summary = _aggregate_comparison({p_id: final_report}, [p_id])
+                if any(r.get("error_at_beginning") for r in run_reports) and not any(len(r.get("actions", [])) > 0 for r in run_reports):
+                    first_err = next((r.get("error") for r in run_reports if r.get("error")), "An error occurred before testing could start.")
+                    final_report["status"] = "error_at_beginning"
+                    final_report["error_at_beginning"] = True
+                    final_report["prompt_rerun"] = True
+                    final_report["error"] = first_err
+                    final_report["rerun_prompt"] = f"The test could not start due to an error: {first_err}. Please check your target URL and rerun the test."
+
+                # Shallow copy to avoid self-referential circular cycles in persona_reports
+                single_persona_rep = dict(final_report)
+                single_persona_rep.pop("persona_reports", None)
+                single_persona_rep.pop("comparison", None)
+                single_persona_rep.pop("comparison_summary", None)
+
+                comparison, comparison_summary = _aggregate_comparison({p_id: single_persona_rep}, [p_id])
                 final_report["comparison"] = comparison
                 final_report["comparison_summary"] = comparison_summary
-                final_report["persona_reports"] = {p_id: final_report}
+                final_report["persona_reports"] = {p_id: single_persona_rep}
                 final_report["personas"] = [p_id]
                 final_report["is_compare"] = False
 
@@ -551,6 +659,10 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
                 sess["persona_reports"] = final_report.get("persona_reports", {})
                 sess["steps"] = all_steps if all_steps else sess.get("steps", [])
                 sess["status"] = final_report.get("status", "completed")
+                sess["error_at_beginning"] = final_report.get("error_at_beginning", False)
+                sess["prompt_rerun"] = final_report.get("prompt_rerun", False)
+                sess["rerun_prompt"] = final_report.get("rerun_prompt")
+                sess["error"] = final_report.get("error")
                 sess["outcome"] = final_report.get("outcome", "completed")
                 sess["outcome_reason"] = final_report.get("outcome_reason", "")
                 sess["claimed_outcome"] = final_report.get("claimed_outcome", "completed")
@@ -570,6 +682,7 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
                         sess["delta"] = delta
 
             if final_report:
+                _clean_report_cycles(final_report)
                 try:
                     save_report(session_id, final_report)
                 except Exception as ex:
@@ -584,15 +697,54 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
             await browser.close()
     except Exception as e:
         print(f"Error launching browser: {e}")
-        q.put({"thought": f"Fatal error: {e}", "session_id": session_id})
+        err_str = str(e)
+        q.put({
+            "thought": f"Fatal browser error: {err_str}",
+            "error": err_str,
+            "error_at_beginning": True,
+            "prompt_rerun": True,
+            "rerun_prompt": f"Failed to start browser or navigate to target: {err_str}. Please verify that the target URL is accessible and rerun the test.",
+            "session_id": session_id,
+        })
         if sess is not None:
-            sess["status"] = "failed"
+            sess["status"] = "error_at_beginning"
+            sess["error_at_beginning"] = True
             sess["outcome"] = "error"
-            sess["outcome_reason"] = f"Fatal browser error: {e}"
-            sess["claimed_outcome"] = "error"
-            sess["verified_outcome"] = "error"
+            sess["outcome_reason"] = f"Fatal browser error: {err_str}"
+            sess["error"] = err_str
+            sess["prompt_rerun"] = True
+            sess["rerun_prompt"] = f"Failed to start browser or navigate to target: {err_str}. Please verify that the target URL is accessible and rerun the test."
+            if not final_report:
+                final_report = {
+                    "session_id": session_id,
+                    "url": req.url,
+                    "task": req.task,
+                    "persona": personas[0],
+                    "personas": personas,
+                    "status": "error_at_beginning",
+                    "error_at_beginning": True,
+                    "error": err_str,
+                    "outcome": "error",
+                    "outcome_reason": f"Fatal browser error: {err_str}",
+                    "prompt_rerun": True,
+                    "rerun_prompt": f"Failed to start browser or navigate to target: {err_str}. Please verify that the target URL is accessible and rerun the test.",
+                    "score": {"score": 0, "total": 0, "label": "Error", "parts": [], "steps_taken": 0, "ideal_steps": 1},
+                    "findings": [{
+                        "title": "Test Failed to Start",
+                        "severity": "critical",
+                        "evidence_steps": [],
+                        "what_happened": f"An error occurred before testing could begin: {err_str}",
+                        "impact": "No steps could be executed on the target application.",
+                        "recommendation": "Check that the target server is running and accessible, then rerun the test.",
+                    }],
+                    "actions": [],
+                    "verdict": f"The test failed to start: {err_str}. Please check the target application and rerun the test.",
+                }
+            sess["report"] = final_report
             try:
                 save_session(session_id, sess)
+                if sess.get("report"):
+                    save_report(session_id, sess["report"])
             except Exception:
                 pass
 
@@ -606,6 +758,10 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
         "outcome_reason": sess.get("outcome_reason", "") if sess else "",
         "claimed_outcome": sess.get("claimed_outcome", "error") if sess else "error",
         "verified_outcome": sess.get("verified_outcome", "error") if sess else "error",
+        "error_at_beginning": sess.get("error_at_beginning", False) if sess else False,
+        "prompt_rerun": sess.get("prompt_rerun", False) if sess else False,
+        "rerun_prompt": sess.get("rerun_prompt") if sess else None,
+        "error": sess.get("error") if sess else None,
     })
 
 
@@ -638,21 +794,34 @@ async def stream_events(request: Request, session_id: str | None = None):
     return StreamingResponse(event_generator(q), media_type="text/event-stream")
 
 
+def _clean_report_cycles(rep: dict) -> dict:
+    """Safeguards against circular self-references in report dictionaries."""
+    if not isinstance(rep, dict):
+        return rep
+    persona_reps = rep.get("persona_reports")
+    if isinstance(persona_reps, dict):
+        for pid, prep in list(persona_reps.items()):
+            if prep is rep:
+                # Break circular self-reference by creating a clean copy without persona_reports
+                persona_reps[pid] = {k: v for k, v in rep.items() if k != "persona_reports"}
+    return rep
+
+
 def _fetch_report_dict(session_id: str | None = None) -> dict:
     if session_id:
         # 1. In-memory completed report
         sess = sessions.get(session_id)
         if sess and sess.get("report"):
-            return sess["report"]
+            return _clean_report_cycles(sess["report"])
         # 2. SQLite persisted report
         db_rep = get_db_report(session_id)
         if db_rep:
-            return db_rep
+            return _clean_report_cycles(db_rep)
         # 3. SQLite session metadata (in-progress or non-report status)
         db_sess = get_db_session(session_id)
         if db_sess:
             if db_sess.get("report"):
-                return db_sess["report"]
+                return _clean_report_cycles(db_sess["report"])
             return {
                 "session_id": session_id,
                 "status": db_sess.get("status", "running"),
@@ -665,6 +834,7 @@ def _fetch_report_dict(session_id: str | None = None) -> dict:
                 "is_compare": db_sess.get("is_compare", False),
                 "comparison": {},
                 "comparison_summary": [],
+                "persona_reports": {},
                 "score": None,
                 "actions": [],
                 "findings": [],
@@ -685,6 +855,7 @@ def _fetch_report_dict(session_id: str | None = None) -> dict:
                 "is_compare": sess.get("is_compare", False),
                 "comparison": sess.get("comparison", {}),
                 "comparison_summary": sess.get("comparison_summary", []),
+                "persona_reports": sess.get("persona_reports", {}),
                 "score": None,
                 "actions": [],
                 "findings": [],
@@ -693,10 +864,10 @@ def _fetch_report_dict(session_id: str | None = None) -> dict:
 
     # Fallback to LAST_REPORT or the latest session report
     if LAST_REPORT:
-        return LAST_REPORT
+        return _clean_report_cycles(LAST_REPORT)
     for sess in reversed(list(sessions.values())):
         if sess.get("report"):
-            return sess["report"]
+            return _clean_report_cycles(sess["report"])
     return {}
 
 
