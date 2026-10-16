@@ -4,14 +4,14 @@ import sys
 import threading
 import queue as stdlib_queue
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, HTMLResponse, Response
 import uuid
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.async_api import async_playwright
 from agent import run_agent_loop, LAST_REPORT
 from scoring import aggregate_run_reports
-from personas import get_persona_config
+from personas import get_persona_config, PERSONAS
 from security import (
     validate_target_url,
     setup_route_interception,
@@ -21,6 +21,18 @@ from security import (
     MAX_STEPS_CAP,
     MAX_SESSION_DURATION_SECONDS,
 )
+from storage import (
+    init_db,
+    save_session,
+    save_report,
+    get_session as get_db_session,
+    get_report as get_db_report,
+    compute_report_delta,
+)
+from export_html import generate_printable_html
+
+# Initialize SQLite database
+init_db()
 
 app = FastAPI()
 
@@ -46,8 +58,10 @@ def get_client_ip(request: Request) -> str:
 class LaunchRequest(BaseModel):
     url: str
     task: str
-    persona: str
+    persona: str | None = None
+    personas: list[str] | None = None
     session_id: str | None = None
+    previous_session_id: str | None = None
     baseline: bool = True
     runs: int = 1
     max_steps: int | None = None
@@ -207,6 +221,67 @@ async def _run_baseline_phase(browser, target_url: str, task: str, queue_adapter
             pass
 
 
+class _PersonaQueueAdapter:
+    """Queue adapter that enriches every event with persona_id, persona, and session_id."""
+    def __init__(self, parent_adapter, persona_id: str, session_id: str):
+        self._parent = parent_adapter
+        self.persona_id = persona_id
+        self.session_id = session_id
+
+    async def put(self, item: dict):
+        enriched = dict(item)
+        enriched.setdefault("persona_id", self.persona_id)
+        enriched.setdefault("persona", self.persona_id)
+        enriched.setdefault("session_id", self.session_id)
+        await self._parent.put(enriched)
+
+
+def _extract_top_finding(findings: list[dict]) -> str:
+    if not findings:
+        return "No critical friction found"
+    severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+    sorted_f = sorted(findings, key=lambda f: severity_rank.get(str(f.get("severity", "medium")).lower(), 4))
+    top = sorted_f[0]
+    return top.get("title") or top.get("what_happened", "Friction encountered")
+
+
+def _aggregate_comparison(persona_reports: dict, personas: list[str]) -> tuple[dict, list]:
+    """Aggregates a comparison object {persona: score, outcome, steps, top_finding}."""
+    comparison = {}
+    comparison_summary = []
+    for p_id in personas:
+        rep = persona_reports.get(p_id, {})
+        p_cfg = get_persona_config(p_id)
+
+        if isinstance(rep.get("score"), dict):
+            score_val = rep["score"].get("total", 0)
+        elif isinstance(rep.get("score"), (int, float)):
+            score_val = int(rep["score"])
+        else:
+            score_val = 0
+
+        outcome_val = rep.get("outcome", "completed")
+        actions = rep.get("actions", [])
+        if isinstance(rep.get("score"), dict) and "steps_taken" in rep["score"]:
+            steps_count = rep["score"]["steps_taken"]
+        else:
+            steps_count = len(actions)
+
+        top_finding = _extract_top_finding(rep.get("findings", []))
+
+        entry = {
+            "persona": p_id,
+            "persona_label": p_cfg.label if p_cfg else p_id,
+            "score": score_val,
+            "outcome": outcome_val,
+            "steps": steps_count,
+            "top_finding": top_finding,
+        }
+        comparison[p_id] = entry
+        comparison_summary.append(entry)
+    return comparison, comparison_summary
+
+
 async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: str):
     """Async work that runs inside the Playwright thread's own loop."""
     print(f"Launching browser for URL: {req.url} (session: {session_id})")
@@ -221,7 +296,8 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
 
     adapter = _AsyncQueueAdapter(q)
     sess = sessions.get(session_id)
-    total_runs = max(1, min(3, int(getattr(req, "runs", 1) or 1)))
+    personas = req.personas if (req.personas and len(req.personas) > 0) else [req.persona or "pro_tester"]
+    is_compare_mode = len(personas) > 1
 
     try:
         target_url = req.url.strip()
@@ -235,82 +311,269 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
             if getattr(req, "baseline", True):
                 await _run_baseline_phase(browser, target_url, req.task, adapter, session_id, sess)
 
-            run_reports = []
-            all_steps = []
+            if is_compare_mode:
+                # Concurrency cap of 3 to respect LLM limits
+                sem = asyncio.Semaphore(3)
+                persona_reports: dict[str, dict] = {}
+                all_steps = []
 
-            for run_idx in range(1, total_runs + 1):
-                if total_runs > 1:
-                    await adapter.put({
-                        "thought": f"--- Starting Run {run_idx} of {total_runs} (Persona: {req.persona}) ---",
-                        "phase": "attack",
-                        "run": run_idx,
-                        "total_runs": total_runs,
-                        "session_id": session_id,
-                    })
+                async def _run_single_persona(p_id: str):
+                    async with sem:
+                        p_adapter = _PersonaQueueAdapter(adapter, p_id, session_id)
+                        persona_cfg = get_persona_config(p_id)
 
-                persona_cfg = get_persona_config(req.persona)
-                page = await browser.new_page(
-                    viewport=persona_cfg.viewport,
-                    is_mobile=persona_cfg.is_mobile,
-                    has_touch=persona_cfg.has_touch,
-                )
-                await setup_route_interception(page)
-                await setup_download_and_file_guards(page)
-                await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                        await p_adapter.put({
+                            "thought": f"Initializing agent as {persona_cfg.label} ({p_id})...",
+                            "phase": "attack",
+                            "persona_id": p_id,
+                            "persona": p_id,
+                            "session_id": session_id,
+                        })
 
-                run_sess = {
+                        context = await browser.new_context(
+                            viewport=persona_cfg.viewport,
+                            is_mobile=persona_cfg.is_mobile,
+                            has_touch=persona_cfg.has_touch,
+                        )
+                        page = await context.new_page()
+                        await setup_route_interception(page)
+                        await setup_download_and_file_guards(page)
+
+                        persona_sess = {
+                            "session_id": session_id,
+                            "url": target_url,
+                            "task": req.task,
+                            "persona": p_id,
+                            "expected_steps": sess.get("expected_steps") if sess else None,
+                            "baseline_failed": sess.get("baseline_failed", False) if sess else False,
+                            "baseline_note": sess.get("baseline_note", "") if sess else "",
+                            "baseline_path": sess.get("baseline_path", []) if sess else [],
+                            "steps": [],
+                        }
+
+                        try:
+                            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+                            rep = await run_agent_loop(
+                                page,
+                                req.task,
+                                p_id,
+                                p_adapter,
+                                max_steps=getattr(req, "max_steps", None) or 15,
+                                max_duration=getattr(req, "max_duration", None) or MAX_SESSION_DURATION_SECONDS,
+                                session_id=session_id,
+                                session_data=persona_sess,
+                                emit_done=False,
+                            )
+                            await p_adapter.put({
+                                "thought": f"Completed audit for {persona_cfg.label} ({p_id}).",
+                                "phase": "persona_done",
+                                "persona_id": p_id,
+                                "persona": p_id,
+                                "persona_done": True,
+                                "session_id": session_id,
+                            })
+                            return p_id, rep, persona_sess
+                        except Exception as e:
+                            print(f"Error in persona {p_id}: {e}")
+                            await p_adapter.put({
+                                "thought": f"Persona {p_id} encountered error: {e}",
+                                "error": str(e),
+                                "persona_id": p_id,
+                                "persona": p_id,
+                                "persona_done": True,
+                                "session_id": session_id,
+                            })
+                            err_rep = {
+                                "persona": p_id,
+                                "outcome": "error",
+                                "outcome_reason": str(e),
+                                "score": {"total": 100, "label": "Severe", "parts": [], "steps_taken": len(persona_sess.get("steps", [])), "ideal_steps": 1},
+                                "findings": [{
+                                    "title": f"Execution Error ({p_id})",
+                                    "severity": "critical",
+                                    "evidence_steps": [],
+                                    "what_happened": f"Agent crashed or timed out: {e}",
+                                    "impact": "Incomplete audit",
+                                    "recommendation": "Check target stability or retry",
+                                }],
+                                "actions": [],
+                            }
+                            return p_id, err_rep, persona_sess
+                        finally:
+                            try:
+                                await page.close()
+                            except Exception:
+                                pass
+                            try:
+                                await context.close()
+                            except Exception:
+                                pass
+
+                persona_tasks = [_run_single_persona(p) for p in personas]
+                results = await asyncio.gather(*persona_tasks, return_exceptions=True)
+
+                for res in results:
+                    if isinstance(res, Exception):
+                        print(f"Persona task returned exception: {res}")
+                        continue
+                    p_id, p_rep, p_sess = res
+                    if p_rep:
+                        persona_reports[p_id] = p_rep
+                    if p_sess.get("steps"):
+                        all_steps.extend(p_sess["steps"])
+
+                comparison, comparison_summary = _aggregate_comparison(persona_reports, personas)
+
+                primary_id = personas[0]
+                primary_rep = persona_reports.get(primary_id, {})
+
+                all_findings = []
+                seen_titles = set()
+                for p_id in personas:
+                    r = persona_reports.get(p_id, {})
+                    for f in r.get("findings", []):
+                        t = f.get("title", "")
+                        if t and t not in seen_titles:
+                            seen_titles.add(t)
+                            f_copy = dict(f)
+                            f_copy.setdefault("discovered_by", p_id)
+                            all_findings.append(f_copy)
+
+                final_report = {
                     "session_id": session_id,
                     "url": target_url,
                     "task": req.task,
-                    "persona": req.persona,
-                    "expected_steps": sess.get("expected_steps") if sess else None,
+                    "persona": primary_id,
+                    "personas": personas,
+                    "is_compare": True,
+                    "comparison": comparison,
+                    "comparison_summary": comparison_summary,
+                    "persona_reports": persona_reports,
+                    "score": primary_rep.get("score", {"total": 0, "label": "Low", "parts": [], "steps_taken": 0, "ideal_steps": 1}),
+                    "verdict": f"Comparison across {len(personas)} personas completed.",
+                    "findings": all_findings if all_findings else primary_rep.get("findings", []),
+                    "actions": primary_rep.get("actions", []),
+                    "outcome": "completed" if any(r.get("outcome") == "completed" for r in persona_reports.values()) else primary_rep.get("outcome", "completed"),
+                    "outcome_reason": primary_rep.get("outcome_reason", ""),
+                    "claimed_outcome": primary_rep.get("claimed_outcome", "completed"),
+                    "verified_outcome": primary_rep.get("verified_outcome", "completed"),
                     "baseline_failed": sess.get("baseline_failed", False) if sess else False,
                     "baseline_note": sess.get("baseline_note", "") if sess else "",
-                    "baseline_path": sess.get("baseline_path", []) if sess else [],
-                    "steps": [],
                 }
-
-                report = await run_agent_loop(
-                    page,
-                    req.task,
-                    req.persona,
-                    adapter,
-                    max_steps=getattr(req, "max_steps", None) or 15,
-                    max_duration=getattr(req, "max_duration", None) or MAX_SESSION_DURATION_SECONDS,
-                    session_id=session_id,
-                    session_data=run_sess,
-                    emit_done=False,
-                )
-
-                if report:
-                    run_reports.append(report)
-                if run_sess.get("steps"):
-                    all_steps.extend(run_sess["steps"])
-
-                try:
-                    await page.close()
-                except Exception:
-                    pass
-
-                if run_idx < total_runs:
-                    await asyncio.sleep(1)
-
-            # Aggregate reports when runs > 1
-            if total_runs > 1 and run_reports:
-                final_report = aggregate_run_reports(run_reports, runs=total_runs)
-            elif run_reports:
-                final_report = run_reports[-1]
             else:
-                final_report = sess.get("report") if sess else {}
+                p_id = personas[0]
+                total_runs = max(1, min(3, int(getattr(req, "runs", 1) or 1)))
+                run_reports = []
+                all_steps = []
+                p_adapter = _PersonaQueueAdapter(adapter, p_id, session_id)
+
+                for run_idx in range(1, total_runs + 1):
+                    if total_runs > 1:
+                        await p_adapter.put({
+                            "thought": f"--- Starting Run {run_idx} of {total_runs} (Persona: {p_id}) ---",
+                            "phase": "attack",
+                            "run": run_idx,
+                            "total_runs": total_runs,
+                            "session_id": session_id,
+                            "persona_id": p_id,
+                        })
+
+                    persona_cfg = get_persona_config(p_id)
+                    context = await browser.new_context(
+                        viewport=persona_cfg.viewport,
+                        is_mobile=persona_cfg.is_mobile,
+                        has_touch=persona_cfg.has_touch,
+                    )
+                    page = await context.new_page()
+                    await setup_route_interception(page)
+                    await setup_download_and_file_guards(page)
+                    await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+
+                    run_sess = {
+                        "session_id": session_id,
+                        "url": target_url,
+                        "task": req.task,
+                        "persona": p_id,
+                        "expected_steps": sess.get("expected_steps") if sess else None,
+                        "baseline_failed": sess.get("baseline_failed", False) if sess else False,
+                        "baseline_note": sess.get("baseline_note", "") if sess else "",
+                        "baseline_path": sess.get("baseline_path", []) if sess else [],
+                        "steps": [],
+                    }
+
+                    report = await run_agent_loop(
+                        page,
+                        req.task,
+                        p_id,
+                        p_adapter,
+                        max_steps=getattr(req, "max_steps", None) or 15,
+                        max_duration=getattr(req, "max_duration", None) or MAX_SESSION_DURATION_SECONDS,
+                        session_id=session_id,
+                        session_data=run_sess,
+                        emit_done=False,
+                    )
+
+                    if report:
+                        run_reports.append(report)
+                    if run_sess.get("steps"):
+                        all_steps.extend(run_sess["steps"])
+
+                    try:
+                        await page.close()
+                    except Exception:
+                        pass
+                    try:
+                        await context.close()
+                    except Exception:
+                        pass
+
+                    if run_idx < total_runs:
+                        await asyncio.sleep(1)
+
+                if total_runs > 1 and run_reports:
+                    final_report = aggregate_run_reports(run_reports, runs=total_runs)
+                elif run_reports:
+                    final_report = run_reports[-1]
+                else:
+                    final_report = sess.get("report") if sess else {}
+
+                comparison, comparison_summary = _aggregate_comparison({p_id: final_report}, [p_id])
+                final_report["comparison"] = comparison
+                final_report["comparison_summary"] = comparison_summary
+                final_report["persona_reports"] = {p_id: final_report}
+                final_report["personas"] = [p_id]
+                final_report["is_compare"] = False
 
             if sess is not None:
                 sess["report"] = final_report
+                sess["comparison"] = final_report.get("comparison", {})
+                sess["comparison_summary"] = final_report.get("comparison_summary", [])
+                sess["persona_reports"] = final_report.get("persona_reports", {})
                 sess["steps"] = all_steps if all_steps else sess.get("steps", [])
                 sess["status"] = final_report.get("status", "completed")
                 sess["outcome"] = final_report.get("outcome", "completed")
                 sess["outcome_reason"] = final_report.get("outcome_reason", "")
                 sess["claimed_outcome"] = final_report.get("claimed_outcome", "completed")
                 sess["verified_outcome"] = final_report.get("verified_outcome", "completed")
+
+            # Delta calculation if linked to a previous session
+            prev_id = getattr(req, "previous_session_id", None) or (sess.get("previous_session_id") if sess else None)
+            if prev_id and final_report:
+                prev_rep = get_db_report(prev_id)
+                if not prev_rep and prev_id in sessions:
+                    prev_rep = sessions[prev_id].get("report")
+                if prev_rep:
+                    delta = compute_report_delta(prev_rep, final_report)
+                    final_report["delta"] = delta
+                    final_report["previous_session_id"] = prev_id
+                    if sess is not None:
+                        sess["delta"] = delta
+
+            if final_report:
+                try:
+                    save_report(session_id, final_report)
+                except Exception as ex:
+                    print(f"Error saving report to SQLite: {ex}")
 
             LAST_REPORT.clear()
             if final_report:
@@ -328,11 +591,17 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
             sess["outcome_reason"] = f"Fatal browser error: {e}"
             sess["claimed_outcome"] = "error"
             sess["verified_outcome"] = "error"
+            try:
+                save_session(session_id, sess)
+            except Exception:
+                pass
 
     # Always signal completion so the SSE generator stops.
     q.put({
         "done": True,
         "session_id": session_id,
+        "comparison": sess.get("comparison", {}) if sess else {},
+        "comparison_summary": sess.get("comparison_summary", []) if sess else [],
         "outcome": sess.get("outcome", "error") if sess else "error",
         "outcome_reason": sess.get("outcome_reason", "") if sess else "",
         "claimed_outcome": sess.get("claimed_outcome", "error") if sess else "error",
@@ -369,27 +638,58 @@ async def stream_events(request: Request, session_id: str | None = None):
     return StreamingResponse(event_generator(q), media_type="text/event-stream")
 
 
-@app.get("/api/report")
-async def get_report(session_id: str | None = None):
+def _fetch_report_dict(session_id: str | None = None) -> dict:
     if session_id:
+        # 1. In-memory completed report
         sess = sessions.get(session_id)
-        if not sess:
-            return {"error": "Session not found", "session_id": session_id}
-        if sess.get("report"):
+        if sess and sess.get("report"):
             return sess["report"]
-        return {
-            "session_id": session_id,
-            "status": sess.get("status", "running"),
-            "outcome": sess.get("outcome"),
-            "outcome_reason": sess.get("outcome_reason", ""),
-            "claimed_outcome": sess.get("claimed_outcome"),
-            "verified_outcome": sess.get("verified_outcome"),
-            "url": sess.get("url"),
-            "task": sess.get("task"),
-            "persona": sess.get("persona"),
-            "score": None,
-            "actions": [],
-        }
+        # 2. SQLite persisted report
+        db_rep = get_db_report(session_id)
+        if db_rep:
+            return db_rep
+        # 3. SQLite session metadata (in-progress or non-report status)
+        db_sess = get_db_session(session_id)
+        if db_sess:
+            if db_sess.get("report"):
+                return db_sess["report"]
+            return {
+                "session_id": session_id,
+                "status": db_sess.get("status", "running"),
+                "outcome": db_sess.get("outcome"),
+                "outcome_reason": "",
+                "url": db_sess.get("url"),
+                "task": db_sess.get("task"),
+                "persona": db_sess.get("persona"),
+                "personas": db_sess.get("personas", []),
+                "is_compare": db_sess.get("is_compare", False),
+                "comparison": {},
+                "comparison_summary": [],
+                "score": None,
+                "actions": [],
+                "findings": [],
+            }
+        # 4. In-memory session metadata (in-progress)
+        if sess:
+            return {
+                "session_id": session_id,
+                "status": sess.get("status", "running"),
+                "outcome": sess.get("outcome"),
+                "outcome_reason": sess.get("outcome_reason", ""),
+                "claimed_outcome": sess.get("claimed_outcome"),
+                "verified_outcome": sess.get("verified_outcome"),
+                "url": sess.get("url"),
+                "task": sess.get("task"),
+                "persona": sess.get("persona"),
+                "personas": sess.get("personas", []),
+                "is_compare": sess.get("is_compare", False),
+                "comparison": sess.get("comparison", {}),
+                "comparison_summary": sess.get("comparison_summary", []),
+                "score": None,
+                "actions": [],
+                "findings": [],
+            }
+        return {"error": "Session not found", "session_id": session_id}
 
     # Fallback to LAST_REPORT or the latest session report
     if LAST_REPORT:
@@ -398,6 +698,53 @@ async def get_report(session_id: str | None = None):
         if sess.get("report"):
             return sess["report"]
     return {}
+
+
+@app.get("/api/report")
+async def get_report_query(session_id: str | None = None):
+    return _fetch_report_dict(session_id)
+
+
+@app.get("/api/report/{session_id}")
+async def get_report_path(session_id: str):
+    res = _fetch_report_dict(session_id)
+    if res.get("error") == "Session not found":
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found")
+    return res
+
+
+@app.get("/api/report/{session_id}/export/json")
+async def export_report_json(session_id: str):
+    res = _fetch_report_dict(session_id)
+    if res.get("error") == "Session not found" or (not res.get("score") and not res.get("comparison")):
+        raise HTTPException(status_code=404, detail=f"Report not found for session '{session_id}'")
+    
+    json_bytes = json.dumps(res, indent=2).encode("utf-8")
+    return Response(
+        content=json_bytes,
+        media_type="application/json",
+        headers={
+            "Content-Disposition": f'attachment; filename="uxgremlin-report-{session_id}.json"'
+        }
+    )
+
+
+@app.get("/api/report/{session_id}/export/html")
+async def export_report_html(session_id: str):
+    res = _fetch_report_dict(session_id)
+    if res.get("error") == "Session not found" or (not res.get("score") and not res.get("comparison")):
+        raise HTTPException(status_code=404, detail=f"Report not found for session '{session_id}'")
+    
+    html_content = generate_printable_html(res)
+    return HTMLResponse(content=html_content)
+
+
+@app.get("/report/{session_id}")
+async def view_report_direct(session_id: str):
+    res = _fetch_report_dict(session_id)
+    if res.get("error") == "Session not found":
+        raise HTTPException(status_code=404, detail=f"Report not found for session '{session_id}'")
+    return HTMLResponse(content=generate_printable_html(res))
 
 
 @app.post("/api/launch")
@@ -425,18 +772,51 @@ async def launch_agent(req: LaunchRequest, request: Request):
     req.max_steps = capped_steps
     req.max_duration = capped_duration
 
+    # 4. Persona normalization
+    valid_personas = []
+    if req.personas and len(req.personas) > 0:
+        for p in req.personas:
+            p_clean = str(p).strip()
+            if p_clean in PERSONAS and p_clean not in valid_personas:
+                valid_personas.append(p_clean)
+        if not valid_personas:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No valid personas provided in 'personas' list. Valid personas: {list(PERSONAS.keys())}"
+            )
+        req.personas = valid_personas
+        if not req.persona or req.persona not in valid_personas:
+            req.persona = valid_personas[0]
+    elif req.persona:
+        p_clean = str(req.persona).strip()
+        if p_clean not in PERSONAS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid persona '{req.persona}'. Valid personas: {list(PERSONAS.keys())}"
+            )
+        req.persona = p_clean
+        req.personas = [p_clean]
+    else:
+        req.persona = "pro_tester"
+        req.personas = ["pro_tester"]
+
     global message_queue
-    session_id = req.session_id or uuid.uuid4().hex[:12]
+    # Short 8-char hex session ID for clean shareable URLs
+    session_id = req.session_id or uuid.uuid4().hex[:8]
     q = stdlib_queue.Queue()
     message_queue = q  # Backwards compatibility
 
     runs = max(1, min(3, int(getattr(req, "runs", 1) or 1)))
+    is_compare = len(req.personas) > 1
 
     sessions[session_id] = {
         "session_id": session_id,
+        "previous_session_id": req.previous_session_id,
         "url": req.url,
         "task": req.task,
         "persona": req.persona,
+        "personas": req.personas,
+        "is_compare": is_compare,
         "baseline": req.baseline,
         "runs": runs,
         "max_steps": capped_steps,
@@ -452,8 +832,16 @@ async def launch_agent(req: LaunchRequest, request: Request):
         "verified_outcome": None,
         "steps": [],
         "report": None,
+        "comparison": {},
+        "comparison_summary": [],
+        "persona_reports": {},
         "queue": q,
     }
+
+    try:
+        save_session(session_id, sessions[session_id])
+    except Exception as ex:
+        print(f"Error persisting session to SQLite: {ex}")
 
     LAST_REPORT.clear()
     t = threading.Thread(target=_playwright_thread, args=(req, q, session_id), daemon=True)
@@ -461,14 +849,17 @@ async def launch_agent(req: LaunchRequest, request: Request):
     return {
         "status": "started",
         "session_id": session_id,
+        "previous_session_id": req.previous_session_id,
         "url": req.url,
         "task": req.task,
         "persona": req.persona,
+        "personas": req.personas,
+        "is_compare": is_compare,
         "baseline": req.baseline,
         "runs": runs,
         "max_steps": capped_steps,
         "max_duration": capped_duration,
-        "message": f"Browser launching for {req.url}",
+        "message": f"Browser launching for {req.url} ({len(req.personas)} persona(s))",
     }
 
 

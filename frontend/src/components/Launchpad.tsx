@@ -1,33 +1,114 @@
 import { useState } from 'react';
 import { Skull, Zap } from 'lucide-react';
 
-export function Launchpad({ onLaunch }: { onLaunch: (data: { session_id?: string; url: string; task: string; persona: string; baseline?: boolean; runs?: number }) => void }) {
+interface LaunchpadProps {
+  onLaunch: (data: {
+    session_id?: string;
+    url: string;
+    task: string;
+    persona: string;
+    personas?: string[];
+    baseline?: boolean;
+    runs?: number;
+  }) => void;
+}
+
+const AVAILABLE_PERSONAS = [
+  {
+    id: 'pro_tester',
+    name: 'Professional UX Tester',
+    icon: '🎯',
+    desc: 'Systematically audits buttons, layout integrity, form fields & finds bugs',
+  },
+  {
+    id: 'impatient',
+    name: 'Impatient User',
+    icon: '😈',
+    desc: 'Rushes through pages, rage-clicks unresponsive elements, abandons on delays',
+  },
+  {
+    id: 'confused',
+    name: 'Confused User',
+    icon: '😵‍💫',
+    desc: 'Hesitates on icons, interprets copy literally, prefers large obvious buttons',
+  },
+  {
+    id: 'skeptic',
+    name: 'Skeptical User',
+    icon: '🧐',
+    desc: 'Refuses real personal data, injects synthetic info, looks for trust signals',
+  },
+  {
+    id: 'mobile',
+    name: 'Mobile User',
+    icon: '📱',
+    desc: 'Emulates 390x844 mobile viewport with touch gestures, auditing 44px tap targets',
+  },
+];
+
+export function Launchpad({ onLaunch }: LaunchpadProps) {
   const [url, setUrl] = useState('');
   const [task, setTask] = useState('');
-  const [persona, setPersona] = useState('pro_tester');
+  const [selectedPersonas, setSelectedPersonas] = useState<string[]>(['pro_tester']);
   const [baseline, setBaseline] = useState(true);
   const [runs, setRuns] = useState(1);
 
+  const togglePersona = (id: string) => {
+    setSelectedPersonas((prev) => {
+      if (prev.includes(id)) {
+        if (prev.length === 1) return prev; // Keep at least one persona
+        return prev.filter((p) => p !== id);
+      } else {
+        return [...prev, id];
+      }
+    });
+  };
+
+  const handleSelectAll = () => {
+    setSelectedPersonas(AVAILABLE_PERSONAS.map((p) => p.id));
+  };
+
+  const handleSelectTop3 = () => {
+    setSelectedPersonas(['pro_tester', 'impatient', 'mobile']);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log('Launch attack:', { url, task, persona, baseline, runs });
+    console.log('Launch attack:', { url, task, personas: selectedPersonas, baseline, runs });
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/launch', {
+      const response = await fetch('http://127.0.0.1:8000/api/start-session', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, task, persona, baseline, runs }),
+        body: JSON.stringify({
+          url,
+          task,
+          persona: selectedPersonas[0],
+          personas: selectedPersonas,
+          baseline,
+          runs,
+        }),
       });
       if (response.ok) {
         const data = await response.json();
-        console.log("Attack launched successfully!", data);
-        onLaunch({ session_id: data.session_id, url, task, persona, baseline, runs });
+        console.log('Attack launched successfully!', data);
+        onLaunch({
+          session_id: data.session_id,
+          url,
+          task,
+          persona: selectedPersonas[0],
+          personas: selectedPersonas,
+          baseline,
+          runs,
+        });
       } else {
-        console.error("Failed to launch attack.");
+        console.error('Failed to launch attack.');
       }
     } catch (err) {
-      console.error("Error launching attack:", err);
+      console.error('Error launching attack:', err);
     }
   };
+
+  const isCompareMode = selectedPersonas.length > 1;
 
   return (
     <div className="min-h-screen flex items-center justify-center p-6">
@@ -70,30 +151,100 @@ export function Launchpad({ onLaunch }: { onLaunch: (data: { session_id?: string
               />
             </div>
 
+            {/* Persona Multi-Select */}
             <div>
-              <label htmlFor="persona" className="block text-sm font-medium text-text-main mb-2">Saboteur Persona</label>
-              <select
-                id="persona"
-                value={persona}
-                onChange={(e) => setPersona(e.target.value)}
-                className="w-full px-4 py-3 bg-bg-dark border border-gray-700 rounded-lg focus:outline-none focus:border-gremlin-purple focus:ring-1 focus:ring-gremlin-purple text-white transition-colors appearance-none"
-              >
-                <option value="pro_tester">🎯 Professional UX Tester (Audits all buttons, layouts, fields & finds bugs)</option>
-                <option value="impatient">😈 Impatient User (Rushes, skips reading)</option>
-                <option value="confused">😵‍💫 Confused User (Clicks randomly, gets lost)</option>
-                <option value="skeptic">🧐 Skeptical User (Hesitates, looks for hidden catches)</option>
-                <option value="mobile">📱 Mobile User (Touchscreen 390x844, audits tap targets &gt;=44px)</option>
-              </select>
-              {persona === 'pro_tester' && (
-                <p className="text-xs text-gremlin-green/90 mt-2 flex items-center gap-1.5">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-gremlin-green animate-pulse"></span>
-                  Methodically audits buttons, layout integrity, form fields, and exposes UX bugs.
-                </p>
-              )}
-              {persona === 'mobile' && (
-                <p className="text-xs text-gremlin-green/90 mt-2 flex items-center gap-1.5">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-gremlin-green animate-pulse"></span>
-                  Emulates 390x844 mobile viewport with touch events, auditing 44px tap targets.
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-sm font-medium text-text-main">
+                  Saboteur Personas (Multi-Select)
+                </label>
+                <div className="flex items-center gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={handleSelectTop3}
+                    className="text-gremlin-purple hover:text-purple-300 transition-colors underline"
+                  >
+                    Top 3
+                  </button>
+                  <span className="text-gray-600">·</span>
+                  <button
+                    type="button"
+                    onClick={handleSelectAll}
+                    className="text-gremlin-purple hover:text-purple-300 transition-colors underline"
+                  >
+                    All 5
+                  </button>
+                </div>
+              </div>
+
+              {/* Persona Cards Grid */}
+              <div className="grid grid-cols-1 gap-2">
+                {AVAILABLE_PERSONAS.map((p) => {
+                  const isChecked = selectedPersonas.includes(p.id);
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      onClick={() => togglePersona(p.id)}
+                      className={`p-3 rounded-lg border text-left transition-all flex items-start justify-between gap-3 ${
+                        isChecked
+                          ? 'bg-purple-950/40 border-gremlin-purple text-white shadow-[0_0_15px_rgba(157,0,255,0.2)]'
+                          : 'bg-bg-dark border-gray-800 text-gray-400 hover:border-gray-700 hover:text-gray-300'
+                      }`}
+                    >
+                      <div className="flex items-start gap-3">
+                        <span className="text-xl shrink-0 mt-0.5">{p.icon}</span>
+                        <div>
+                          <div className="text-sm font-semibold text-white flex items-center gap-2">
+                            {p.name}
+                            {p.id === 'pro_tester' && (
+                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-gremlin-purple/30 text-purple-200 border border-gremlin-purple/40">
+                                QA Rigor
+                              </span>
+                            )}
+                            {p.id === 'mobile' && (
+                              <span className="text-[10px] px-1.5 py-0.2 rounded bg-gremlin-green/20 text-gremlin-green border border-gremlin-green/40">
+                                Touch 44px
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-gray-400 mt-0.5 leading-tight">{p.desc}</p>
+                        </div>
+                      </div>
+
+                      <div
+                        className={`w-5 h-5 rounded flex items-center justify-center shrink-0 mt-0.5 border transition-colors ${
+                          isChecked
+                            ? 'bg-gremlin-purple border-gremlin-purple text-white'
+                            : 'border-gray-700 bg-bg-dark'
+                        }`}
+                      >
+                        {isChecked && (
+                          <svg className="w-3.5 h-3.5" viewBox="0 0 20 20" fill="currentColor">
+                            <path
+                              fillRule="evenodd"
+                              d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                              clipRule="evenodd"
+                            />
+                          </svg>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Compare Mode Callout */}
+              {isCompareMode ? (
+                <div className="mt-3 p-2.5 rounded-lg bg-purple-950/50 border border-gremlin-purple/40 flex items-center justify-between text-xs text-purple-200">
+                  <span className="flex items-center gap-1.5 font-semibold text-gremlin-green">
+                    <span className="w-2 h-2 rounded-full bg-gremlin-green animate-pulse" />
+                    ⚡ Compare Mode Active ({selectedPersonas.length} Personas)
+                  </span>
+                  <span className="text-gray-400 text-[11px]">Concurrent browser contexts (cap: 3)</span>
+                </div>
+              ) : (
+                <p className="text-xs text-gray-400 mt-2">
+                  Select 2 or more personas to enable side-by-side concurrent comparison.
                 </p>
               )}
             </div>
@@ -154,10 +305,10 @@ export function Launchpad({ onLaunch }: { onLaunch: (data: { session_id?: string
 
             <button
               type="submit"
-              className="w-full py-4 mt-4 bg-gremlin-purple hover:bg-gremlin-purple/90 text-white font-bold rounded-lg shadow-[0_0_20px_rgba(157,0,255,0.4)] hover:shadow-[0_0_30px_rgba(57,255,20,0.4)] hover:text-gremlin-green transition-all flex items-center justify-center gap-2 group"
+              className="w-full py-4 mt-4 bg-gremlin-purple hover:bg-gremlin-purple/90 text-white font-bold rounded-lg shadow-[0_0_20px_rgba(157,0,255,0.4)] hover:shadow-[0_0_30px_rgba(57,255,20,0.4)] hover:text-gremlin-green transition-all flex items-center justify-center gap-2 group cursor-pointer"
             >
               <Zap className="w-5 h-5 group-hover:animate-pulse" />
-              SABOTAGE WEBSITE
+              {isCompareMode ? `COMPARE ${selectedPersonas.length} PERSONAS` : 'SABOTAGE WEBSITE'}
             </button>
           </form>
         </div>

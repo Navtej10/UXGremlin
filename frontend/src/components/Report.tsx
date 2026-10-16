@@ -1,5 +1,17 @@
 import { useEffect, useState } from 'react';
-import { ChevronLeft, ChevronRight, RefreshCcw, ShieldAlert } from 'lucide-react';
+import {
+  ChevronLeft,
+  ChevronRight,
+  RefreshCcw,
+  ShieldAlert,
+  Share2,
+  Download,
+  Printer,
+  RotateCcw,
+  Check,
+} from 'lucide-react';
+import { ComparisonSummary, type ComparisonItem } from './ComparisonSummary';
+import { BeforeAfterPanel, type ReportDelta } from './BeforeAfterPanel';
 
 export interface HistoryItem {
   thought: string;
@@ -28,7 +40,7 @@ interface ScorePart {
   why: string;
 }
 
-interface Finding {
+export interface Finding {
   title: string;
   severity: 'critical' | 'high' | 'medium';
   evidence_steps: number[];
@@ -41,13 +53,21 @@ interface Finding {
   bounding_box?: { x: number; y: number; width: number; height: number } | null;
   suggested_fix?: string;
   selector?: string;
+  discovered_by?: string;
 }
 
-interface SabotageReport {
+export interface SabotageReport {
   session_id?: string;
+  previous_session_id?: string;
+  delta?: ReportDelta;
   url?: string;
   task?: string;
   persona?: string;
+  personas?: string[];
+  is_compare?: boolean;
+  comparison?: Record<string, ComparisonItem>;
+  comparison_summary?: ComparisonItem[];
+  persona_reports?: Record<string, SabotageReport>;
   outcome?: 'completed' | 'abandoned' | 'gave_up' | 'max_steps_reached' | 'error';
   outcome_reason?: string;
   claimed_outcome?: string;
@@ -76,15 +96,26 @@ interface SabotageReport {
   actions?: ActionItem[];
 }
 
-interface ReportProps {
+export interface ReportProps {
   session: {
     session_id?: string;
+    previous_session_id?: string;
     url: string;
     task: string;
     persona: string;
+    personas?: string[];
   };
   history: HistoryItem[];
+  initialReport?: SabotageReport | null;
+  isReadOnly?: boolean;
   onRestart: () => void;
+  onReRun?: (prevSession: {
+    url: string;
+    task: string;
+    persona: string;
+    personas?: string[];
+    previous_session_id: string;
+  }) => void;
 }
 
 const PERSONA_NAMES: Record<string, string> = {
@@ -136,11 +167,56 @@ const OUTCOME_CONFIG: Record<
   },
 };
 
-export function Report({ session, history, onRestart }: ReportProps) {
+export function Report({
+  session,
+  history,
+  initialReport,
+  isReadOnly,
+  onRestart,
+  onReRun,
+}: ReportProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [report, setReport] = useState<SabotageReport | null>(null);
+  const [report, setReport] = useState<SabotageReport | null>(initialReport || null);
+  const [copiedShare, setCopiedShare] = useState(false);
+  const [selectedPersona, setSelectedPersona] = useState<string>(
+    initialReport?.personas?.[0] || session.personas?.[0] || session.persona
+  );
+
+  const currentSessionId = report?.session_id || session.session_id;
+
+  const handleShare = async () => {
+    if (!currentSessionId) return;
+    const shareUrl = `${window.location.origin}/report/${currentSessionId}`;
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopiedShare(true);
+      setTimeout(() => setCopiedShare(false), 2500);
+    } catch {
+      prompt('Copy shareable report link:', shareUrl);
+    }
+  };
+
+  const handleExportJson = () => {
+    if (!currentSessionId) return;
+    window.open(
+      `http://127.0.0.1:8000/api/report/${encodeURIComponent(currentSessionId)}/export/json`,
+      '_blank'
+    );
+  };
+
+  const handlePrintHtml = () => {
+    if (!currentSessionId) return;
+    window.open(
+      `http://127.0.0.1:8000/api/report/${encodeURIComponent(currentSessionId)}/export/html`,
+      '_blank'
+    );
+  };
 
   useEffect(() => {
+    if (initialReport && initialReport.score) {
+      return;
+    }
+
     let cancelled = false;
     let tries = 0;
     const reportUrl = session.session_id
@@ -151,8 +227,18 @@ export function Report({ session, history, onRestart }: ReportProps) {
       try {
         const res = await fetch(reportUrl);
         const data = await res.json();
-        if (data?.score) {
-          if (!cancelled) setReport(data as SabotageReport);
+        if (data?.score || data?.comparison) {
+          if (!cancelled) {
+            setReport(data as SabotageReport);
+            if (data.personas && data.personas.length > 0) {
+              setSelectedPersona((curr) =>
+                data.personas.includes(curr) ? curr : data.personas[0]
+              );
+            }
+            if (session.session_id && !window.location.pathname.startsWith('/report/')) {
+              window.history.pushState(null, '', `/report/${session.session_id}`);
+            }
+          }
           return;
         }
       } catch {
@@ -164,16 +250,26 @@ export function Report({ session, history, onRestart }: ReportProps) {
     return () => {
       cancelled = true;
     };
-  }, [session.session_id]);
+  }, [session.session_id, initialReport]);
+
+  // Active persona report (for switching between archetypes)
+  const activeReport: SabotageReport =
+    (report?.persona_reports && report.persona_reports[selectedPersona]) ||
+    report ||
+    ({} as SabotageReport);
 
   // ONE source of truth: the backend's saved action list
   const slideshowItems: (ActionItem | HistoryItem)[] =
-    report?.actions && report.actions.length > 0 ? report.actions : history;
+    activeReport?.actions && activeReport.actions.length > 0
+      ? activeReport.actions
+      : report?.actions && report.actions.length > 0
+      ? report.actions
+      : history;
   const totalSteps = slideshowItems.length;
 
   const jumpToStep = (n: number) => {
-    if (report?.actions && report.actions.length > 0) {
-      const idx = report.actions.findIndex((a) => a.step_number === n);
+    if (activeReport?.actions && activeReport.actions.length > 0) {
+      const idx = activeReport.actions.findIndex((a) => a.step_number === n);
       if (idx >= 0) {
         setCurrentIndex(idx);
         return;
@@ -186,7 +282,8 @@ export function Report({ session, history, onRestart }: ReportProps) {
     if (i >= 0) setCurrentIndex(i);
   };
 
-  const total = report?.score.total ?? 0;
+  const currentScore = activeReport?.score || report?.score;
+  const total = currentScore?.total ?? 0;
   const scoreColor =
     total <= 20
       ? 'text-gremlin-green'
@@ -205,72 +302,174 @@ export function Report({ session, history, onRestart }: ReportProps) {
   };
 
   const currentItem = slideshowItems[currentIndex];
+  const outcome = activeReport?.outcome || report?.outcome;
+  const outcomeReason = activeReport?.outcome_reason || report?.outcome_reason;
+  const claimedOutcome = activeReport?.claimed_outcome || report?.claimed_outcome;
+  const verifiedOutcome = activeReport?.verified_outcome || report?.verified_outcome;
+  const currentFindings =
+    activeReport?.findings && activeReport.findings.length > 0
+      ? activeReport.findings
+      : report?.findings || [];
 
   return (
     <div className="h-screen w-screen flex flex-col bg-bg-dark text-white">
       {/* Header */}
-      <div className="h-16 border-b border-gray-800 flex items-center justify-between px-6 bg-bg-card">
+      <div className="h-16 border-b border-gray-800 flex items-center justify-between px-6 bg-bg-card shrink-0 gap-4">
         <div className="flex items-center gap-3">
           <ShieldAlert className="text-gremlin-purple w-6 h-6" />
           <h1 className="text-xl font-bold uppercase tracking-widest text-transparent bg-clip-text bg-gradient-to-r from-gremlin-purple to-gremlin-green">
             Sabotage Report
           </h1>
+          {isReadOnly && (
+            <span className="text-[11px] font-mono px-2.5 py-0.5 rounded bg-gremlin-purple/20 text-purple-300 border border-gremlin-purple/40">
+              Archived Report
+            </span>
+          )}
         </div>
-        <button
-          onClick={onRestart}
-          className="flex items-center gap-2 px-4 py-2 bg-gray-800 hover:bg-gray-700 text-sm font-semibold rounded transition-colors"
-        >
-          <RefreshCcw className="w-4 h-4" />
-          New Attack
-        </button>
+
+        <div className="flex items-center gap-2">
+          {/* Share Button */}
+          <button
+            onClick={handleShare}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs font-semibold rounded-lg border border-gray-700 text-gray-200 transition-colors cursor-pointer"
+            title="Copy shareable report link"
+          >
+            {copiedShare ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-gremlin-green" />
+                <span className="text-gremlin-green">Copied!</span>
+              </>
+            ) : (
+              <>
+                <Share2 className="w-3.5 h-3.5 text-gray-400" />
+                <span>Share</span>
+              </>
+            )}
+          </button>
+
+          {/* Export JSON Button */}
+          <button
+            onClick={handleExportJson}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs font-semibold rounded-lg border border-gray-700 text-gray-200 transition-colors cursor-pointer"
+            title="Download JSON report payload"
+          >
+            <Download className="w-3.5 h-3.5 text-gray-400" />
+            <span>Export JSON</span>
+          </button>
+
+          {/* Print / PDF Button */}
+          <button
+            onClick={handlePrintHtml}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs font-semibold rounded-lg border border-gray-700 text-gray-200 transition-colors cursor-pointer"
+            title="Print or save as PDF"
+          >
+            <Printer className="w-3.5 h-3.5 text-gray-400" />
+            <span>Print / PDF</span>
+          </button>
+
+          {/* Re-run Test Button */}
+          {onReRun && (
+            <button
+              onClick={() => {
+                const targetSessionId = report?.session_id || session.session_id;
+                if (!targetSessionId) return;
+                onReRun({
+                  url: report?.url || session.url,
+                  task: report?.task || session.task,
+                  persona: selectedPersona || session.persona,
+                  personas: report?.personas || session.personas,
+                  previous_session_id: targetSessionId,
+                });
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-gremlin-purple hover:bg-purple-600 text-xs font-bold rounded-lg text-white shadow-sm transition-all cursor-pointer"
+              title="Re-run this test and link to previous session"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Re-run this test</span>
+            </button>
+          )}
+
+          {/* New Attack / Restart Button */}
+          <button
+            onClick={onRestart}
+            className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-800 hover:bg-gray-700 text-xs font-semibold rounded-lg text-gray-300 transition-colors cursor-pointer"
+          >
+            <RefreshCcw className="w-3.5 h-3.5" />
+            <span>New Attack</span>
+          </button>
+        </div>
       </div>
+
+      {/* Before / After Delta Panel if this was a Re-test */}
+      {report?.delta && (
+        <div className="border-b border-gray-800 bg-black/60 px-8 py-4 shrink-0 max-h-96 overflow-y-auto">
+          <BeforeAfterPanel delta={report.delta} />
+        </div>
+      )}
+
+      {/* Comparison Summary at top of Report */}
+      {(report?.comparison ||
+        report?.comparison_summary ||
+        (session.personas && session.personas.length > 1)) && (
+        <div className="border-b border-gray-800 bg-black/50 px-8 py-5 shrink-0 max-h-80 overflow-y-auto">
+          <ComparisonSummary
+            comparison={report?.comparison}
+            comparisonSummary={report?.comparison_summary}
+            selectedPersona={selectedPersona}
+            onSelectPersona={(p) => {
+              setSelectedPersona(p);
+              setCurrentIndex(0);
+            }}
+          />
+        </div>
+      )}
 
       <div className="flex-1 flex overflow-hidden">
         {/* Left Side: Summary */}
         <div className="w-1/3 border-r border-gray-800 p-8 flex flex-col gap-6 overflow-y-auto">
-          {report?.outcome && (
+          {outcome && (
             <div
               className={`p-4 rounded-xl border ${
-                OUTCOME_CONFIG[report.outcome]?.bg ?? 'bg-gray-800/60'
+                OUTCOME_CONFIG[outcome]?.bg ?? 'bg-gray-800/60'
               } ${
-                OUTCOME_CONFIG[report.outcome]?.border ?? 'border-gray-700'
+                OUTCOME_CONFIG[outcome]?.border ?? 'border-gray-700'
               } shadow-lg flex flex-col gap-2.5`}
             >
               <div className="flex items-center justify-between">
                 <span className="text-[11px] uppercase tracking-wider text-gray-400 font-bold">
-                  Task Outcome
+                  Task Outcome ({PERSONA_NAMES[selectedPersona]?.split(' ')[0] || selectedPersona})
                 </span>
-                {report.claimed_outcome &&
-                  report.verified_outcome &&
-                  report.claimed_outcome !== report.verified_outcome && (
+                {claimedOutcome &&
+                  verifiedOutcome &&
+                  claimedOutcome !== verifiedOutcome && (
                     <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-black/60 text-amber-300 border border-amber-500/30">
-                      Claimed: {report.claimed_outcome} · Verified: {report.verified_outcome}
+                      Claimed: {claimedOutcome} · Verified: {verifiedOutcome}
                     </span>
                   )}
               </div>
               <div className="flex items-center gap-2.5">
                 <span
                   className={`w-3 h-3 rounded-full ${
-                    OUTCOME_CONFIG[report.outcome]?.dot ?? 'bg-gray-400'
+                    OUTCOME_CONFIG[outcome]?.dot ?? 'bg-gray-400'
                   } animate-pulse`}
                 />
                 <span
                   className={`text-lg font-extrabold tracking-wide uppercase ${
-                    OUTCOME_CONFIG[report.outcome]?.text ?? 'text-white'
+                    OUTCOME_CONFIG[outcome]?.text ?? 'text-white'
                   }`}
                 >
-                  {OUTCOME_CONFIG[report.outcome]?.label ?? report.outcome}
+                  {OUTCOME_CONFIG[outcome]?.label ?? outcome}
                 </span>
               </div>
-              {report.outcome_reason && (
+              {outcomeReason && (
                 <p className="text-xs text-gray-300 leading-relaxed pl-3 border-l-2 border-white/20 mt-0.5">
-                  {report.outcome_reason}
+                  {outcomeReason}
                 </p>
               )}
             </div>
           )}
 
-          {report?.baseline_failed && (
+          {(activeReport?.baseline_failed || report?.baseline_failed) && (
             <div className="p-4 rounded-xl border border-amber-500/50 bg-amber-950/40 text-amber-300 text-xs flex items-start gap-3 shadow-lg">
               <ShieldAlert className="w-5 h-5 shrink-0 text-amber-400 mt-0.5" />
               <div>
@@ -286,46 +485,75 @@ export function Report({ session, history, onRestart }: ReportProps) {
 
           <div>
             <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-2">Target</h2>
-            <p className="font-mono text-lg">{report?.url || session.url}</p>
+            <p className="font-mono text-lg">{activeReport?.url || report?.url || session.url}</p>
           </div>
           <div>
             <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-2">Task</h2>
-            <p className="text-lg">{report?.task || session.task}</p>
+            <p className="text-lg">{activeReport?.task || report?.task || session.task}</p>
           </div>
           <div>
             <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-2">Persona</h2>
-            <p className="text-lg text-gremlin-purple font-semibold">
-              {PERSONA_NAMES[report?.persona || session.persona] || report?.persona || session.persona}
-            </p>
+            <div className="flex items-center gap-2">
+              <p className="text-lg text-gremlin-purple font-semibold">
+                {PERSONA_NAMES[selectedPersona] || selectedPersona}
+              </p>
+              {session.personas && session.personas.length > 1 && (
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-gremlin-purple/20 text-purple-200 border border-gremlin-purple/40">
+                  Compare View
+                </span>
+              )}
+            </div>
+            {session.personas && session.personas.length > 1 && (
+              <div className="flex flex-wrap gap-1.5 mt-2">
+                {session.personas.map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => {
+                      setSelectedPersona(p);
+                      setCurrentIndex(0);
+                    }}
+                    className={`px-2.5 py-1 rounded text-xs font-semibold border transition-all cursor-pointer ${
+                      selectedPersona === p
+                        ? 'bg-gremlin-purple text-white border-gremlin-purple shadow-sm'
+                        : 'bg-black/40 text-gray-400 border-gray-800 hover:border-gray-700 hover:text-white'
+                    }`}
+                  >
+                    {PERSONA_NAMES[p]?.split(' ')[0] || p}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           
           <div className="mt-8 p-6 bg-black/40 border border-gray-800 rounded-lg">
-            <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-4 text-center">Friction Score</h2>
-            {!report ? (
+            <h2 className="text-gray-400 text-sm uppercase tracking-wider mb-4 text-center">
+              Friction Score {session.personas && session.personas.length > 1 ? `(${PERSONA_NAMES[selectedPersona]?.split(' ')[0] || selectedPersona})` : ''}
+            </h2>
+            {!currentScore ? (
               <p className="text-center text-gray-500 text-sm">Generating report…</p>
             ) : (
               <>
                 <div className="flex items-center justify-center gap-4">
-                  <div className={`text-6xl font-black ${scoreColor}`}>{report.score.total}</div>
-                  {((report.runs && report.runs > 1) || (report.score.runs && report.score.runs > 1)) && (
+                  <div className={`text-6xl font-black ${scoreColor}`}>{currentScore.total}</div>
+                  {((report?.runs && report.runs > 1) || (currentScore.runs && currentScore.runs > 1)) && (
                     <div className="text-left bg-gray-900/90 border border-gray-700/70 rounded-lg px-3 py-1.5 shadow-sm">
                       <div className="text-sm font-extrabold text-white tracking-wide">
-                        {report.score_min ?? report.score.score_min}–{report.score_max ?? report.score.score_max}
+                        {report?.score_min ?? currentScore.score_min}–{report?.score_max ?? currentScore.score_max}
                       </div>
                       <div className="text-[11px] text-gremlin-green font-medium">
-                        consistent across {report.runs ?? report.score.runs} runs
+                        consistent across {report?.runs ?? currentScore.runs} runs
                       </div>
                     </div>
                   )}
                 </div>
                 <p className="text-center text-sm mt-1 text-gray-400">
-                  {report.score.label} friction · {report.score.steps_taken} steps taken, about {report.score.ideal_steps} expected
-                  {report.baseline_failed ? ' (heuristic fallback)' : ''}
+                  {currentScore.label} friction · {currentScore.steps_taken} steps taken, about {currentScore.ideal_steps} expected
+                  {activeReport?.baseline_failed || report?.baseline_failed ? ' (heuristic fallback)' : ''}
                 </p>
-                <p className="mt-4 text-sm text-gray-300">{report.verdict}</p>
+                <p className="mt-4 text-sm text-gray-300">{activeReport?.verdict || report?.verdict}</p>
 
                 <div className="mt-5 space-y-3">
-                  {report.score.parts.map((p) => (
+                  {currentScore.parts?.map((p) => (
                     <div key={p.name}>
                       <div className="flex justify-between text-sm">
                         <span>{p.name}</span>
@@ -340,7 +568,7 @@ export function Report({ session, history, onRestart }: ReportProps) {
                           <button
                             key={n}
                             onClick={() => jumpToStep(n)}
-                            className="px-1.5 py-0.5 text-xs rounded bg-gray-800 hover:bg-gray-700"
+                            className="px-1.5 py-0.5 text-xs rounded bg-gray-800 hover:bg-gray-700 cursor-pointer"
                           >
                             step {n}
                           </button>
@@ -350,17 +578,17 @@ export function Report({ session, history, onRestart }: ReportProps) {
                   ))}
                 </div>
 
-                {session.persona === 'pro_tester' && (
+                {selectedPersona === 'pro_tester' && (
                   <div className="mt-4 pt-4 border-t border-gray-800/80 flex items-center justify-around text-xs">
                     <span className="text-gray-400">QA Bugs Found:</span>
-                    <span className="font-bold text-gremlin-green text-sm">{report.bugs ?? 0}</span>
+                    <span className="font-bold text-gremlin-green text-sm">{activeReport?.bugs ?? report?.bugs ?? 0}</span>
                   </div>
                 )}
               </>
             )}
           </div>
 
-          {report?.findings.map((f) => (
+          {currentFindings.map((f) => (
             <div key={f.title} className="p-4 bg-black/40 border border-gray-800 rounded-lg">
               <div className="flex items-center justify-between">
                 <h3 className="font-semibold text-sm">{f.title}</h3>
