@@ -180,12 +180,12 @@ def is_personal_data_field(label: str, target: str, field_type: str = "") -> boo
 
 
 def get_fake_personal_data(label: str, target: str = "") -> str:
-    """Generates obviously synthetic/fake data for the skeptic persona."""
+    """Generates obviously synthetic/fake data (e.g. fake_user@example.com) for form fields."""
     combined = f"{label} {target}".lower()
     if "email" in combined:
-        return "refused_fake_user@privacy-first.invalid"
+        return "fake_user@example.com"
     if any(k in combined for k in ["phone", "tel", "mobile"]):
-        return "555-019-0000"
+        return "555-0100"
     if any(k in combined for k in ["name", "user"]):
         return "Fake User Refused"
     if any(k in combined for k in ["zip", "postal"]):

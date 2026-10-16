@@ -621,6 +621,11 @@ Respond ONLY with a valid JSON object matching:
     if baseline_failed and "unreachable or unclear" not in verdict.lower():
         verdict = f"Note: Baseline run failed ({baseline_note}). {verdict}"
 
+    # State in report that fake form data was used
+    fake_data_note = "Clearly fake form data (for example test@example.com) was used during this test session."
+    if not client and "fake data" not in verdict.lower():
+        verdict = f"{verdict.rstrip()} {fake_data_note}"
+
     # Validate evidence steps in findings
     valid_step_numbers = {
         getattr(s, "n", i+1) if not isinstance(s, dict) else s.get("n", i+1)
@@ -631,6 +636,12 @@ Respond ONLY with a valid JSON object matching:
             n for n in f.get("evidence_steps", []) if isinstance(n, int) and n in valid_step_numbers
         ]
 
+    security_notes = []
+    if isinstance(session, dict):
+        security_notes.extend(session.get("security_notes", []))
+    if fake_data_note not in security_notes:
+        security_notes.append(fake_data_note)
+
     # Return final report: score numbers remain strictly deterministic and unaltered
     return {
         "score": score_data,
@@ -638,6 +649,8 @@ Respond ONLY with a valid JSON object matching:
         "findings": findings,
         "baseline_failed": baseline_failed,
         "baseline_note": baseline_note,
+        "fake_data_used": True,
+        "security_notes": security_notes,
     }
 
 

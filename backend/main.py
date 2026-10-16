@@ -3,7 +3,7 @@ import json
 import sys
 import threading
 import queue as stdlib_queue
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import StreamingResponse
 import uuid
 from pydantic import BaseModel
@@ -12,6 +12,15 @@ from playwright.async_api import async_playwright
 from agent import run_agent_loop, LAST_REPORT
 from scoring import aggregate_run_reports
 from personas import get_persona_config
+from security import (
+    validate_target_url,
+    setup_route_interception,
+    setup_download_and_file_guards,
+    session_rate_limiter,
+    apply_session_security_caps,
+    MAX_STEPS_CAP,
+    MAX_SESSION_DURATION_SECONDS,
+)
 
 app = FastAPI()
 
@@ -23,6 +32,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+def get_client_ip(request: Request) -> str:
+    """Extracts client IP, respecting X-Forwarded-For if behind a proxy."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "127.0.0.1"
+
+
 class LaunchRequest(BaseModel):
     url: str
     task: str
@@ -30,6 +50,8 @@ class LaunchRequest(BaseModel):
     session_id: str | None = None
     baseline: bool = True
     runs: int = 1
+    max_steps: int | None = None
+    max_duration: float | None = None
 
 # In-memory session store mapping session_id -> session data dict
 sessions: dict[str, dict] = {}
@@ -96,6 +118,8 @@ async def _run_baseline_phase(browser, target_url: str, task: str, queue_adapter
     })
 
     baseline_page = await browser.new_page(viewport={"width": 1280, "height": 800})
+    await setup_route_interception(baseline_page)
+    await setup_download_and_file_guards(baseline_page)
     try:
         await baseline_page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
         baseline_sess = {"steps": []}
@@ -230,6 +254,8 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
                     is_mobile=persona_cfg.is_mobile,
                     has_touch=persona_cfg.has_touch,
                 )
+                await setup_route_interception(page)
+                await setup_download_and_file_guards(page)
                 await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
 
                 run_sess = {
@@ -249,6 +275,8 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
                     req.task,
                     req.persona,
                     adapter,
+                    max_steps=getattr(req, "max_steps", None) or 15,
+                    max_duration=getattr(req, "max_duration", None) or MAX_SESSION_DURATION_SECONDS,
                     session_id=session_id,
                     session_data=run_sess,
                     emit_done=False,
@@ -374,7 +402,29 @@ async def get_report(session_id: str | None = None):
 
 @app.post("/api/launch")
 @app.post("/api/start-session")
-async def launch_agent(req: LaunchRequest):
+async def launch_agent(req: LaunchRequest, request: Request):
+    # 1. Per-IP rate limit check
+    client_ip = get_client_ip(request)
+    allowed, remaining, reset_in = session_rate_limiter.check_rate_limit(client_ip)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Rate limit exceeded for IP '{client_ip}'. Try again in {int(reset_in)}s."
+        )
+
+    # 2. Target URL validation
+    is_safe, error_msg = validate_target_url(req.url)
+    if not is_safe:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid or forbidden target URL: {error_msg}"
+        )
+
+    # 3. Security caps on steps and duration
+    capped_steps, capped_duration = apply_session_security_caps(req.max_steps, req.max_duration)
+    req.max_steps = capped_steps
+    req.max_duration = capped_duration
+
     global message_queue
     session_id = req.session_id or uuid.uuid4().hex[:12]
     q = stdlib_queue.Queue()
@@ -389,6 +439,8 @@ async def launch_agent(req: LaunchRequest):
         "persona": req.persona,
         "baseline": req.baseline,
         "runs": runs,
+        "max_steps": capped_steps,
+        "max_duration": capped_duration,
         "expected_steps": None,
         "baseline_path": [],
         "baseline_failed": False,
@@ -414,6 +466,8 @@ async def launch_agent(req: LaunchRequest):
         "persona": req.persona,
         "baseline": req.baseline,
         "runs": runs,
+        "max_steps": capped_steps,
+        "max_duration": capped_duration,
         "message": f"Browser launching for {req.url}",
     }
 
