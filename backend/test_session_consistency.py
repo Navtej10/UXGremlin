@@ -334,3 +334,150 @@ def test_decision_schema_extraction_and_fallback():
     assert fallback["task_status"] == "done"
     assert fallback["reason"] != ""
 
+
+def test_start_session_api_runs_parameter(client):
+    """
+    Verify that start-session and launch API accept runs (1-3, default 1)
+    and store it on the session.
+    """
+    from unittest.mock import patch
+    with patch("main.threading.Thread"):
+        # 1. Default runs (not specified in request)
+        res_default = client.post("/api/start-session", json={
+            "url": "https://example.com/test-runs-1",
+            "task": "test default runs",
+            "persona": "pro_tester",
+        })
+        assert res_default.status_code == 200
+        data_default = res_default.json()
+        assert data_default["runs"] == 1
+        assert sessions[data_default["session_id"]]["runs"] == 1
+
+        # 2. Explicit runs = 3
+        res_3 = client.post("/api/launch", json={
+            "url": "https://example.com/test-runs-3",
+            "task": "test 3 runs",
+            "persona": "impatient",
+            "runs": 3,
+        })
+        assert res_3.status_code == 200
+        data_3 = res_3.json()
+        assert data_3["runs"] == 3
+        assert sessions[data_3["session_id"]]["runs"] == 3
+
+
+def test_aggregate_run_reports_multi_run_consistency():
+    """
+    Verify multi-run aggregation:
+    - computes score_min, score_max, score_mean
+    - marks findings in 2+ runs as 'consistent', others as 'occasional'
+    """
+    from scoring import aggregate_run_reports
+
+    report_1 = {
+        "score": {"total": 82, "score": 82, "label": "Severe"},
+        "verdict": "Run 1 encountered severe checkout friction.",
+        "findings": [
+            {
+                "title": "Unresponsive checkout button",
+                "severity": "critical",
+                "evidence_steps": [1],
+                "what_happened": "Button did not respond to click.",
+                "impact": "Blocked user.",
+                "recommendation": "Fix click event listener.",
+            },
+            {
+                "title": "Form validation error on email",
+                "severity": "medium",
+                "evidence_steps": [2],
+                "what_happened": "Email format was rejected without clear message.",
+                "impact": "User hesitated.",
+                "recommendation": "Add helper text.",
+            },
+        ],
+        "outcome": "completed",
+    }
+
+    report_2 = {
+        "score": {"total": 85, "score": 85, "label": "Severe"},
+        "verdict": "Run 2 got stuck momentarily on button.",
+        "findings": [
+            {
+                "title": "Unresponsive checkout button",
+                "severity": "critical",
+                "evidence_steps": [1],
+                "what_happened": "Button did not respond to click.",
+                "impact": "Blocked user.",
+                "recommendation": "Fix click event listener.",
+            },
+            {
+                "title": "Slow page transition",
+                "severity": "medium",
+                "evidence_steps": [3],
+                "what_happened": "Transition took 4.5 seconds.",
+                "impact": "Slowed flow.",
+                "recommendation": "Optimize asset loading.",
+            },
+        ],
+        "outcome": "completed",
+    }
+
+    report_3 = {
+        "score": {"total": 89, "score": 89, "label": "Severe"},
+        "verdict": "Run 3 experienced unresponsive button.",
+        "findings": [
+            {
+                "title": "Unresponsive checkout button",
+                "severity": "critical",
+                "evidence_steps": [1],
+                "what_happened": "Button did not respond to click.",
+                "impact": "Blocked user.",
+                "recommendation": "Fix click event listener.",
+            },
+            {
+                "title": "Missing order confirmation summary",
+                "severity": "high",
+                "evidence_steps": [4],
+                "what_happened": "No receipt displayed.",
+                "impact": "User lacked confirmation.",
+                "recommendation": "Show confirmation modal.",
+            },
+        ],
+        "outcome": "completed",
+    }
+
+    aggregated = aggregate_run_reports([report_1, report_2, report_3], runs=3)
+
+    # 1. Scores aggregation
+    assert aggregated["score_min"] == 82
+    assert aggregated["score_max"] == 89
+    assert aggregated["score_mean"] == 85.3
+    assert aggregated["runs"] == 3
+
+    assert aggregated["score"]["score_min"] == 82
+    assert aggregated["score"]["score_max"] == 89
+    assert aggregated["score"]["score_mean"] == 85.3
+    assert aggregated["score"]["runs"] == 3
+
+    # 2. Findings consistency
+    findings = aggregated["findings"]
+    button_finding = next(f for f in findings if "unresponsive checkout" in f["title"].lower())
+    assert button_finding["consistency"] == "consistent"
+    assert button_finding["runs_count"] == 3
+
+    email_finding = next(f for f in findings if "email" in f["title"].lower())
+    assert email_finding["consistency"] == "occasional"
+    assert email_finding["runs_count"] == 1
+
+    transition_finding = next(f for f in findings if "transition" in f["title"].lower())
+    assert transition_finding["consistency"] == "occasional"
+    assert transition_finding["runs_count"] == 1
+
+    receipt_finding = next(f for f in findings if "confirmation" in f["title"].lower())
+    assert receipt_finding["consistency"] == "occasional"
+    assert receipt_finding["runs_count"] == 1
+
+    # Consistent findings sorted first
+    assert findings[0]["consistency"] == "consistent"
+
+

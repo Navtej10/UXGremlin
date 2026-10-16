@@ -1,25 +1,26 @@
 import { useState } from 'react';
 import { Skull, Zap } from 'lucide-react';
 
-export function Launchpad({ onLaunch }: { onLaunch: (data: { session_id?: string; url: string; task: string; persona: string; baseline?: boolean }) => void }) {
+export function Launchpad({ onLaunch }: { onLaunch: (data: { session_id?: string; url: string; task: string; persona: string; baseline?: boolean; runs?: number }) => void }) {
   const [url, setUrl] = useState('');
   const [task, setTask] = useState('');
   const [persona, setPersona] = useState('pro_tester');
   const [baseline, setBaseline] = useState(true);
+  const [runs, setRuns] = useState(1);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    console.log('Launch attack:', { url, task, persona, baseline });
+    console.log('Launch attack:', { url, task, persona, baseline, runs });
     try {
       const response = await fetch('http://127.0.0.1:8000/api/launch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, task, persona, baseline }),
+        body: JSON.stringify({ url, task, persona, baseline, runs }),
       });
       if (response.ok) {
         const data = await response.json();
         console.log("Attack launched successfully!", data);
-        onLaunch({ session_id: data.session_id, url, task, persona, baseline });
+        onLaunch({ session_id: data.session_id, url, task, persona, baseline, runs });
       } else {
         console.error("Failed to launch attack.");
       }
@@ -81,6 +82,7 @@ export function Launchpad({ onLaunch }: { onLaunch: (data: { session_id?: string
                 <option value="impatient">😈 Impatient User (Rushes, skips reading)</option>
                 <option value="confused">😵‍💫 Confused User (Clicks randomly, gets lost)</option>
                 <option value="skeptic">🧐 Skeptical User (Hesitates, looks for hidden catches)</option>
+                <option value="mobile">📱 Mobile User (Touchscreen 390x844, audits tap targets &gt;=44px)</option>
               </select>
               {persona === 'pro_tester' && (
                 <p className="text-xs text-gremlin-green/90 mt-2 flex items-center gap-1.5">
@@ -88,6 +90,48 @@ export function Launchpad({ onLaunch }: { onLaunch: (data: { session_id?: string
                   Methodically audits buttons, layout integrity, form fields, and exposes UX bugs.
                 </p>
               )}
+              {persona === 'mobile' && (
+                <p className="text-xs text-gremlin-green/90 mt-2 flex items-center gap-1.5">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-gremlin-green animate-pulse"></span>
+                  Emulates 390x844 mobile viewport with touch events, auditing 44px tap targets.
+                </p>
+              )}
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="block text-sm font-medium text-text-main">
+                  Number of Runs (Consistency Audit)
+                </label>
+                <span className="text-xs text-gremlin-green font-mono font-bold">
+                  {runs} {runs === 1 ? 'Run (Standard)' : 'Runs (Multi-run)'}
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                {[1, 2, 3].map((num) => (
+                  <button
+                    key={num}
+                    type="button"
+                    onClick={() => setRuns(num)}
+                    className={`py-2 px-3 rounded-lg border text-sm font-semibold transition-all flex flex-col items-center justify-center ${
+                      runs === num
+                        ? 'bg-gremlin-purple/20 border-gremlin-purple text-white shadow-[0_0_15px_rgba(157,0,255,0.3)]'
+                        : 'bg-bg-dark border-gray-700 text-gray-400 hover:border-gray-600 hover:text-gray-200'
+                    }`}
+                  >
+                    <span>{num} {num === 1 ? 'Run' : 'Runs'}</span>
+                    <span className="text-[10px] text-gray-400 font-normal">
+                      {num === 1 ? 'Single test' : num === 2 ? '2x consistency' : '3x full audit'}
+                    </span>
+                  </button>
+                ))}
+              </div>
+              <p className="text-xs text-gray-400 mt-2">
+                <span className="text-amber-400 font-medium">Time cost:</span>{' '}
+                {runs === 1
+                  ? 'Standard test duration (~1-2 min).'
+                  : `${runs} sequential runs will take ~${runs}x longer to aggregate consistency.`}
+              </p>
             </div>
 
             <div className="p-4 bg-bg-dark border border-gray-700/80 rounded-lg flex items-center justify-between">

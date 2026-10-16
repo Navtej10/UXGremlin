@@ -130,28 +130,30 @@ def test_baseline_failure_records_warning_and_falls_back_to_heuristic():
 
 def test_launch_api_baseline_flag(client):
     """Verify that start-session API defaults baseline to True and accepts explicit False."""
-    # 1. Default launch request (no baseline field provided)
-    res1 = client.post("/api/launch", json={
-        "url": "https://example.com/test1",
-        "task": "test default baseline",
-        "persona": "pro_tester",
-    })
-    assert res1.status_code == 200
-    data1 = res1.json()
-    assert data1["baseline"] is True
-    assert sessions[data1["session_id"]]["baseline"] is True
+    from unittest.mock import patch
+    with patch("main.threading.Thread"):
+        # 1. Default launch request (no baseline field provided)
+        res1 = client.post("/api/launch", json={
+            "url": "https://example.com/test1",
+            "task": "test default baseline",
+            "persona": "pro_tester",
+        })
+        assert res1.status_code == 200
+        data1 = res1.json()
+        assert data1["baseline"] is True
+        assert sessions[data1["session_id"]]["baseline"] is True
 
-    # 2. Explicit baseline = False
-    res2 = client.post("/api/launch", json={
-        "url": "https://example.com/test2",
-        "task": "test disabled baseline",
-        "persona": "impatient",
-        "baseline": False,
-    })
-    assert res2.status_code == 200
-    data2 = res2.json()
-    assert data2["baseline"] is False
-    assert sessions[data2["session_id"]]["baseline"] is False
+        # 2. Explicit baseline = False
+        res2 = client.post("/api/launch", json={
+            "url": "https://example.com/test2",
+            "task": "test disabled baseline",
+            "persona": "impatient",
+            "baseline": False,
+        })
+        assert res2.status_code == 200
+        data2 = res2.json()
+        assert data2["baseline"] is False
+        assert sessions[data2["session_id"]]["baseline"] is False
 
 
 def test_run_baseline_phase_uses_cache_and_streams_status(tmp_path):

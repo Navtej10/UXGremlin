@@ -2,6 +2,11 @@ import json
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from evidence import (
+    detect_findings_from_evidence,
+    attach_screenshots_with_bounding_boxes,
+    generate_suggested_fixes,
+)
 
 # ---------------------------------------------------------------------------
 # Scoring Constants: Weights, Caps, and Thresholds
@@ -51,6 +56,10 @@ LABEL_SMOOTH_MAX = 20
 LABEL_MINOR_MAX = 45
 LABEL_MODERATE_MAX = 70
 
+# Critical automated accessibility and layout violations
+WEIGHT_CRITICAL_VIOLATION = 4
+CAP_CRITICAL_VIOLATIONS = 20
+
 
 @dataclass
 class Step:
@@ -70,6 +79,10 @@ class Step:
     console_errors: list[str] = field(default_factory=list)
     failed_requests: list[str] = field(default_factory=list)
     dom_changed: bool | None = None
+    axe_violations: list[dict] = field(default_factory=list)
+    tap_targets: list[dict] = field(default_factory=list)
+    contrast_issues: list[dict] = field(default_factory=list)
+    overlapping_elements: list[dict] = field(default_factory=list)
 
 
 def score_to_label(score: int) -> str:
@@ -395,6 +408,40 @@ def compute_friction(session: dict | list[Step] | Any, completed: bool | None = 
         })
 
     # -------------------------------------------------------------------------
+    # Signal 9: Critical automated accessibility and layout violations
+    # -------------------------------------------------------------------------
+    critical_violation_steps: list[int] = []
+    total_critical_violations = 0
+    for s in steps:
+        step_n = getattr(s, "n", 0) if not isinstance(s, dict) else s.get("n", 0)
+        axes = (getattr(s, "axe_violations", []) if not isinstance(s, dict) else s.get("axe_violations", [])) or []
+        taps = (getattr(s, "tap_targets", []) if not isinstance(s, dict) else s.get("tap_targets", [])) or []
+        contrasts = (getattr(s, "contrast_issues", []) if not isinstance(s, dict) else s.get("contrast_issues", [])) or []
+        overlaps = (getattr(s, "overlapping_elements", []) if not isinstance(s, dict) else s.get("overlapping_elements", [])) or []
+
+        crit_axes = [v for v in axes if v.get("impact") in ("critical", "serious")]
+        crit_taps = [t for t in taps if t.get("width", 44) < 32 or t.get("height", 44) < 32]
+        crit_contrasts = [c for c in contrasts if c.get("contrast_ratio", 4.5) < 3.0]
+        crit_overlaps = [o for o in overlaps if o.get("overlap_area", 0) > 80]
+
+        step_crit_count = len(crit_axes) + len(crit_taps) + len(crit_contrasts) + len(crit_overlaps)
+        if step_crit_count > 0:
+            critical_violation_steps.append(step_n)
+            total_critical_violations += step_crit_count
+
+    if critical_violation_steps:
+        pts = min(CAP_CRITICAL_VIOLATIONS, total_critical_violations * WEIGHT_CRITICAL_VIOLATION)
+        desc = f"Encountered {total_critical_violations} critical automated accessibility or layout defect(s) across {len(critical_violation_steps)} step(s)."
+        breakdown.append({
+            "name": "Critical UI/A11y Violations",
+            "points": pts,
+            "description": desc,
+            "why": desc,
+            "step_numbers": critical_violation_steps,
+            "evidence": critical_violation_steps,
+        })
+
+    # -------------------------------------------------------------------------
     # Final Score & Label Normalization
     # -------------------------------------------------------------------------
     raw_points = sum(item["points"] for item in breakdown)
@@ -450,8 +497,8 @@ def build_report(
     """
     Builds the usability audit report.
     The friction score and breakdown are strictly computed deterministically by compute_friction.
-    The LLM is invoked solely to produce the human-readable summary paragraph ('verdict')
-    and specific findings from the computed breakdown, and is forbidden from modifying any numbers.
+    The LLM is kept OUT of detection: findings are derived automatically from evidence.
+    The LLM is invoked solely to produce suggested fixes (CSS/copy) and the summary paragraph ('verdict').
     """
     score_data = compute_friction(session, completed=completed)
 
@@ -467,21 +514,14 @@ def build_report(
         task = task or getattr(session, "task", "")
         persona = persona or getattr(session, "persona", "")
 
-    steps_log = "\n".join([
-        f"Step {getattr(s, 'n', i+1) if not isinstance(s, dict) else s.get('n', i+1)}: "
-        f"Action={getattr(s, 'action', '') if not isinstance(s, dict) else s.get('action', '')}, "
-        f"Target/Label='{getattr(s, 'label', '') if not isinstance(s, dict) else s.get('label', '')}', "
-        f"URL='{getattr(s, 'url', '') if not isinstance(s, dict) else s.get('url', '')}', "
-        f"URL_After='{getattr(s, 'url_after', '') if not isinstance(s, dict) else s.get('url_after', '')}', "
-        f"OK={getattr(s, 'ok', True) if not isinstance(s, dict) else s.get('ok', True)}"
-        + (
-            f", Friction={getattr(s, 'friction_type', None) if not isinstance(s, dict) else s.get('friction_type')}"
-            if (getattr(s, "friction_type", None) if not isinstance(s, dict) else s.get("friction_type"))
-            else ""
-        )
-        + f"\n  Thought: {getattr(s, 'thought', '') if not isinstance(s, dict) else s.get('thought', '')}"
-        for i, s in enumerate(steps)
-    ])
+    # 1. Automated finding detection from collected step evidence (LLM out of detection)
+    findings = detect_findings_from_evidence(session if not isinstance(session, list) else {"steps": steps})
+
+    # 2. Attach step screenshot with red bounding box drawn on offending element
+    attach_screenshots_with_bounding_boxes(findings, steps)
+
+    # 3. Invoke LLM strictly to write concrete suggested fixes (CSS / copy change) from evidence
+    generate_suggested_fixes(findings, client=client, model=model)
 
     baseline_failed = (
         session.get("baseline_failed", False) if isinstance(session, dict)
@@ -492,13 +532,22 @@ def build_report(
         else getattr(session, "baseline_note", "")
     ) or ("task may be unreachable or unclear" if baseline_failed else "")
 
+    steps_log = "\n".join([
+        f"Step {getattr(s, 'n', i+1) if not isinstance(s, dict) else s.get('n', i+1)}: "
+        f"Action={getattr(s, 'action', '') if not isinstance(s, dict) else s.get('action', '')}, "
+        f"Target/Label='{getattr(s, 'label', '') if not isinstance(s, dict) else s.get('label', '')}', "
+        f"URL='{getattr(s, 'url', '') if not isinstance(s, dict) else s.get('url', '')}', "
+        f"OK={getattr(s, 'ok', True) if not isinstance(s, dict) else s.get('ok', True)}"
+        for i, s in enumerate(steps)
+    ])
+
     baseline_prompt_section = (
         f"\nCRITICAL BASELINE AUDIT NOTE:\nThe direct baseline agent failed this task ({baseline_note}). "
         f"The task may be unreachable or unclear. Explicitly state in the verdict that the task may be unreachable or unclear.\n"
         if baseline_failed else ""
     )
 
-    prompt = f"""You are an expert UX auditor writing a Sabotage Report analyzing user testing session friction.
+    verdict_prompt = f"""You are an expert UX auditor writing a Sabotage Report summary.
 
 Task: {task}
 Persona: {persona}
@@ -511,39 +560,29 @@ Execution Steps:
 Deterministic Friction Breakdown:
 {json.dumps(score_data['breakdown'], indent=2)}
 
-CRITICAL INSTRUCTIONS:
-- The friction score ({score_data['score']}/100, {score_data['label']}) and the breakdown numbers are mathematically fixed and deterministic.
-- You must NOT recalculate, alter, or contradict these scores, weights, or breakdown points.
-- Write a concise, 2-3 sentence human-readable summary paragraph ('verdict') explaining why this score was reached based on the breakdown.
-- Provide between 1 and 4 high-value usability findings based strictly on the steps and breakdown.
+Detected Usability Findings:
+{json.dumps([{'title': f['title'], 'what_happened': f['what_happened']} for f in findings], indent=2)}
 
-Respond ONLY with a valid JSON object matching this schema:
+CRITICAL INSTRUCTIONS:
+- Write a concise, 2-3 sentence human-readable summary paragraph ('verdict') explaining why this score was reached based on the breakdown.
+- Do NOT generate or alter findings.
+
+Respond ONLY with a valid JSON object matching:
 {{
-  "verdict": "2-3 concise sentences summarizing the primary friction points and overall outcome.",
-  "findings": [
-    {{
-      "title": "Short descriptive title of the issue",
-      "severity": "critical" | "high" | "medium",
-      "evidence_steps": [1, 2],
-      "what_happened": "Clear explanation of what the user encountered",
-      "impact": "How this harmed task completion, confidence, or speed",
-      "recommendation": "Specific actionable fix for designers and developers"
-    }}
-  ]
+  "verdict": "2-3 concise sentences summarizing the primary friction points and overall outcome."
 }}
 """
 
     verdict = ""
-    findings: list[dict] = []
 
     try:
         if client is not None:
             if hasattr(client, "sync_chat_completion"):
                 resp = client.sync_chat_completion(
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[{"role": "user", "content": verdict_prompt}],
                     model_type="text",
                     temperature=0.2,
-                    max_tokens=2000,
+                    max_tokens=600,
                     response_format={"type": "json_object"},
                 )
                 narrative = json.loads(resp.choices[0].message.content)
@@ -551,15 +590,16 @@ Respond ONLY with a valid JSON object matching this schema:
                 resp = client.chat.completions.create(
                     model=model or "openai/gpt-oss-120b",
                     temperature=0.2,
-                    max_tokens=2000,
+                    max_tokens=600,
                     response_format={"type": "json_object"},
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=[{"role": "user", "content": verdict_prompt}],
                 )
                 narrative = json.loads(resp.choices[0].message.content)
             else:
                 narrative = {}
             verdict = narrative.get("verdict", "")
-            findings = narrative.get("findings", [])
+            if not findings and narrative.get("findings"):
+                findings = narrative.get("findings")
     except Exception as e:
         print(f"LLM narrative generation exception: {e}")
 
@@ -581,18 +621,6 @@ Respond ONLY with a valid JSON object matching this schema:
     if baseline_failed and "unreachable or unclear" not in verdict.lower():
         verdict = f"Note: Baseline run failed ({baseline_note}). {verdict}"
 
-    if baseline_failed:
-        has_baseline_finding = any("baseline" in f.get("title", "").lower() for f in findings)
-        if not has_baseline_finding:
-            findings.insert(0, {
-                "title": "Baseline Failure: Objective May Be Unreachable",
-                "severity": "critical",
-                "evidence_steps": [],
-                "what_happened": "The efficient baseline tester was unable to complete the task.",
-                "impact": "Indicates that the task instructions, starting page, or user flow may be broken or impossible to fulfill.",
-                "recommendation": "Review the task description and target URL to ensure the objective can be completed directly.",
-            })
-
     # Validate evidence steps in findings
     valid_step_numbers = {
         getattr(s, "n", i+1) if not isinstance(s, dict) else s.get("n", i+1)
@@ -611,3 +639,148 @@ Respond ONLY with a valid JSON object matching this schema:
         "baseline_failed": baseline_failed,
         "baseline_note": baseline_note,
     }
+
+
+def _normalize_title(t: str) -> str:
+    import re
+    return re.sub(r"[^\w\s]", "", t or "").strip().lower()
+
+
+def _finding_tokens(t: str) -> set[str]:
+    stop_words = {"the", "a", "an", "in", "on", "at", "for", "to", "of", "and", "or", "is", "was", "with"}
+    words = _normalize_title(t).split()
+    return {w for w in words if w not in stop_words and len(w) > 2}
+
+
+def _are_findings_equivalent(f1: dict, f2: dict) -> bool:
+    t1 = _normalize_title(f1.get("title", ""))
+    t2 = _normalize_title(f2.get("title", ""))
+    if not t1 or not t2:
+        return False
+    if t1 == t2:
+        return True
+    if (t1 in t2 or t2 in t1) and min(len(t1), len(t2)) >= 8:
+        return True
+    tok1 = _finding_tokens(f1.get("title", ""))
+    tok2 = _finding_tokens(f2.get("title", ""))
+    if tok1 and tok2:
+        jaccard = len(tok1 & tok2) / len(tok1 | tok2)
+        if jaccard >= 0.5:
+            return True
+    return False
+
+
+def aggregate_run_reports(reports: list[dict], runs: int = 1) -> dict:
+    """
+    Aggregates reports from multiple sequential runs of the same persona/task.
+    Computes:
+      - score_min, score_max, score_mean
+      - findings that appeared in 2+ runs are marked 'consistent'; others 'occasional'
+    """
+    if not reports:
+        return {}
+
+    if len(reports) <= 1 and runs <= 1:
+        return reports[0] if reports else {}
+
+    # Extract score values
+    scores: list[int | float] = []
+    for r in reports:
+        sc = r.get("score")
+        if isinstance(sc, dict):
+            val = sc.get("total", sc.get("score", 0))
+        elif isinstance(sc, (int, float)):
+            val = sc
+        else:
+            val = 0
+        scores.append(val)
+
+    if not scores:
+        scores = [0]
+
+    score_min = min(scores)
+    score_max = max(scores)
+    mean_val = round(sum(scores) / len(scores), 1)
+    score_mean = int(mean_val) if mean_val.is_integer() else mean_val
+
+    # Cluster findings across runs to measure consistency
+    clusters: list[dict] = []
+    for run_idx, r in enumerate(reports, start=1):
+        for f in r.get("findings", []):
+            matched_cluster = None
+            for c in clusters:
+                if _are_findings_equivalent(f, c["representative"]):
+                    matched_cluster = c
+                    break
+            if matched_cluster:
+                matched_cluster["run_indices"].add(run_idx)
+                matched_cluster["instances"].append(f)
+                sev_order = {"critical": 3, "high": 2, "medium": 1, "low": 0}
+                if sev_order.get(f.get("severity", ""), 0) > sev_order.get(matched_cluster["representative"].get("severity", ""), 0):
+                    matched_cluster["representative"] = f
+            else:
+                clusters.append({
+                    "representative": dict(f),
+                    "run_indices": {run_idx},
+                    "instances": [f],
+                })
+
+    aggregated_findings: list[dict] = []
+    for c in clusters:
+        item = dict(c["representative"])
+        # Findings appearing in 2+ runs are marked "consistent"; others "occasional"
+        is_consistent = len(c["run_indices"]) >= 2
+        item["consistency"] = "consistent" if is_consistent else "occasional"
+        item["runs_count"] = len(c["run_indices"])
+        item["total_runs"] = runs
+        aggregated_findings.append(item)
+
+    # Sort consistent findings first, then by severity
+    sev_rank = {"critical": 3, "high": 2, "medium": 1, "low": 0}
+    aggregated_findings.sort(
+        key=lambda x: (
+            1 if x.get("consistency") == "consistent" else 0,
+            sev_rank.get(x.get("severity", ""), 0),
+        ),
+        reverse=True,
+    )
+
+    # Select base representative report (closest to mean score)
+    best_idx = min(range(len(reports)), key=lambda i: abs(scores[i] - score_mean))
+    base = dict(reports[best_idx])
+    aggregated = dict(base)
+
+    # Update score object
+    score_obj = dict(base.get("score", {})) if isinstance(base.get("score"), dict) else {}
+    score_obj["score_min"] = score_min
+    score_obj["score_max"] = score_max
+    score_obj["score_mean"] = score_mean
+    score_obj["runs"] = runs
+    score_obj["total"] = round(score_mean)
+    score_obj["score"] = round(score_mean)
+
+    aggregated["score"] = score_obj
+    aggregated["score_min"] = score_min
+    aggregated["score_max"] = score_max
+    aggregated["score_mean"] = score_mean
+    aggregated["runs"] = runs
+    aggregated["findings"] = aggregated_findings
+
+    base_verdict = base.get("verdict", "")
+    if f"consistent across {runs} runs" not in base_verdict and runs > 1:
+        aggregated["verdict"] = (
+            f"Consistency audit across {runs} runs (range {score_min}–{score_max}, mean {score_mean}). "
+            + base_verdict
+        )
+
+    aggregated["runs_summary"] = [
+        {
+            "run": i + 1,
+            "score": scores[i],
+            "outcome": reports[i].get("outcome", "completed"),
+            "findings_count": len(reports[i].get("findings", [])),
+        }
+        for i in range(len(reports))
+    ]
+
+    return aggregated

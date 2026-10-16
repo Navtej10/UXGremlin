@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from playwright.async_api import async_playwright
 from agent import run_agent_loop, LAST_REPORT
+from scoring import aggregate_run_reports
+from personas import get_persona_config
 
 app = FastAPI()
 
@@ -27,6 +29,7 @@ class LaunchRequest(BaseModel):
     persona: str
     session_id: str | None = None
     baseline: bool = True
+    runs: int = 1
 
 # In-memory session store mapping session_id -> session data dict
 sessions: dict[str, dict] = {}
@@ -194,6 +197,7 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
 
     adapter = _AsyncQueueAdapter(q)
     sess = sessions.get(session_id)
+    total_runs = max(1, min(3, int(getattr(req, "runs", 1) or 1)))
 
     try:
         target_url = req.url.strip()
@@ -207,10 +211,82 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
             if getattr(req, "baseline", True):
                 await _run_baseline_phase(browser, target_url, req.task, adapter, session_id, sess)
 
-            page = await browser.new_page(viewport={"width": 1280, "height": 800})
-            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+            run_reports = []
+            all_steps = []
 
-            await run_agent_loop(page, req.task, req.persona, adapter, session_id=session_id, session_data=sess)
+            for run_idx in range(1, total_runs + 1):
+                if total_runs > 1:
+                    await adapter.put({
+                        "thought": f"--- Starting Run {run_idx} of {total_runs} (Persona: {req.persona}) ---",
+                        "phase": "attack",
+                        "run": run_idx,
+                        "total_runs": total_runs,
+                        "session_id": session_id,
+                    })
+
+                persona_cfg = get_persona_config(req.persona)
+                page = await browser.new_page(
+                    viewport=persona_cfg.viewport,
+                    is_mobile=persona_cfg.is_mobile,
+                    has_touch=persona_cfg.has_touch,
+                )
+                await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
+
+                run_sess = {
+                    "session_id": session_id,
+                    "url": target_url,
+                    "task": req.task,
+                    "persona": req.persona,
+                    "expected_steps": sess.get("expected_steps") if sess else None,
+                    "baseline_failed": sess.get("baseline_failed", False) if sess else False,
+                    "baseline_note": sess.get("baseline_note", "") if sess else "",
+                    "baseline_path": sess.get("baseline_path", []) if sess else [],
+                    "steps": [],
+                }
+
+                report = await run_agent_loop(
+                    page,
+                    req.task,
+                    req.persona,
+                    adapter,
+                    session_id=session_id,
+                    session_data=run_sess,
+                    emit_done=False,
+                )
+
+                if report:
+                    run_reports.append(report)
+                if run_sess.get("steps"):
+                    all_steps.extend(run_sess["steps"])
+
+                try:
+                    await page.close()
+                except Exception:
+                    pass
+
+                if run_idx < total_runs:
+                    await asyncio.sleep(1)
+
+            # Aggregate reports when runs > 1
+            if total_runs > 1 and run_reports:
+                final_report = aggregate_run_reports(run_reports, runs=total_runs)
+            elif run_reports:
+                final_report = run_reports[-1]
+            else:
+                final_report = sess.get("report") if sess else {}
+
+            if sess is not None:
+                sess["report"] = final_report
+                sess["steps"] = all_steps if all_steps else sess.get("steps", [])
+                sess["status"] = final_report.get("status", "completed")
+                sess["outcome"] = final_report.get("outcome", "completed")
+                sess["outcome_reason"] = final_report.get("outcome_reason", "")
+                sess["claimed_outcome"] = final_report.get("claimed_outcome", "completed")
+                sess["verified_outcome"] = final_report.get("verified_outcome", "completed")
+
+            LAST_REPORT.clear()
+            if final_report:
+                LAST_REPORT.update(final_report)
 
             print("Navigation complete. Waiting 2 seconds before closing...")
             await asyncio.sleep(2)
@@ -297,11 +373,14 @@ async def get_report(session_id: str | None = None):
 
 
 @app.post("/api/launch")
+@app.post("/api/start-session")
 async def launch_agent(req: LaunchRequest):
     global message_queue
     session_id = req.session_id or uuid.uuid4().hex[:12]
     q = stdlib_queue.Queue()
     message_queue = q  # Backwards compatibility
+
+    runs = max(1, min(3, int(getattr(req, "runs", 1) or 1)))
 
     sessions[session_id] = {
         "session_id": session_id,
@@ -309,6 +388,7 @@ async def launch_agent(req: LaunchRequest):
         "task": req.task,
         "persona": req.persona,
         "baseline": req.baseline,
+        "runs": runs,
         "expected_steps": None,
         "baseline_path": [],
         "baseline_failed": False,
@@ -333,6 +413,7 @@ async def launch_agent(req: LaunchRequest):
         "task": req.task,
         "persona": req.persona,
         "baseline": req.baseline,
+        "runs": runs,
         "message": f"Browser launching for {req.url}",
     }
 

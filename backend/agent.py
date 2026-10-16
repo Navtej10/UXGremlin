@@ -7,7 +7,16 @@ import json
 from playwright.async_api import Page
 from dotenv import load_dotenv
 from scoring import Step, compute_friction, build_report
+from evidence import collect_step_evidence
 from llm_client import resilient_llm_client, LLMUnavailableError
+from personas import (
+    PersonaConfig,
+    PERSONAS,
+    get_persona_config,
+    is_personal_data_field,
+    get_fake_personal_data,
+    audit_trust_signals_in_page,
+)
 
 load_dotenv()
 
@@ -143,40 +152,13 @@ async def recover_decision_from_failed_text(text: str, status_callback=None) -> 
         return regex_fallback_decision(text)
 
 
-PERSONA_GUIDES = {
-    "pro_tester": (
-        "You are a meticulous, senior Professional UX & QA Engineer. Your directive is to systematically audit, "
-        "inspect, and test the entire interface while accomplishing the task. You methodically evaluate all visible "
-        "buttons, navigation menus, form inputs, dropdowns, and layout elements. You actively hunt for bugs, "
-        "misaligned layouts, confusing hierarchies, missing error messages, unclickable buttons, and validation gaps. "
-        "Before concluding, you ensure that interactive fields, primary buttons, and relevant paths are thoroughly verified."
-    ),
-    "impatient": (
-        "You are an extremely impatient user. You skim quickly, click prominent visible links/buttons right away, "
-        "and avoid reading long paragraphs. If an action fails or there is friction, you quickly try an alternative "
-        "or abort out of frustration."
-    ),
-    "confused": (
-        "You are a confused, non-technical user. You hesitate, get easily distracted, click tangential links, "
-        "and wander around. You find it hard to identify the direct path."
-    ),
-    "skeptic": (
-        "You are a skeptical, cautious user. You look for hidden traps, inspect labels carefully, "
-        "and avoid rushing into actions without checking options."
-    ),
-    "baseline": (
-        "You are an expert, highly efficient user testing baseline. "
-        "You have zero confusion, ignore irrelevant elements, and take the shortest, "
-        "most direct path to successfully accomplish the goal. "
-        "You do not wander, hesitate, or perform redundant actions. "
-        "Your sole focus is reaching the target goal with the minimum necessary steps."
-    )
-}
+PERSONA_GUIDES = {k: v.behavior_rules for k, v in PERSONAS.items()}
 
-async def extract_visible_interactive_elements(page: Page):
+async def extract_visible_interactive_elements(page: Page, persona_cfg: PersonaConfig | None = None):
     """
     Extracts visible, interactable elements from the active viewport
     and annotates them with temporary data-uxg-id attributes for reliable targeting.
+    Filters and orders elements according to persona configuration.
     """
     js_extract = """
     () => {
@@ -201,6 +183,10 @@ async def extract_visible_interactive_elements(page: Page):
 
                 if (!isVisible) continue;
 
+                const width = Math.round(rect.width);
+                const height = Math.round(rect.height);
+                const area = width * height;
+
                 let text = (
                     el.innerText ||
                     el.getAttribute('aria-label') ||
@@ -218,6 +204,9 @@ async def extract_visible_interactive_elements(page: Page):
 
                 if (tag === 'a' && !text && !href) continue;
 
+                const hasIcon = Boolean(el.querySelector('svg, i, [class*="icon"], [class*="fa-"]'));
+                const isIconOnly = (text.length <= 1 || /^[^a-zA-Z0-9]+$/.test(text)) && hasIcon;
+
                 const uxgId = `uxg-${count + 1}`;
                 el.setAttribute('data-uxg-id', uxgId);
 
@@ -228,6 +217,10 @@ async def extract_visible_interactive_elements(page: Page):
                     id: uxgId,
                     tag: tag,
                     text: label,
+                    width: width,
+                    height: height,
+                    area: area,
+                    is_icon_only: isIconOnly,
                     href: href ? href.slice(0, 50) : undefined,
                     type: type || undefined,
                     placeholder: placeholder || undefined
@@ -242,7 +235,24 @@ async def extract_visible_interactive_elements(page: Page):
     """
     try:
         elements = await page.evaluate(js_extract)
-        return elements or []
+        if not elements:
+            return []
+
+        # Confused persona hard rule: ignore links under size threshold
+        if persona_cfg and persona_cfg.hard_rules.get("ignore_link_area_threshold"):
+            thresh = persona_cfg.hard_rules["ignore_link_area_threshold"]
+            elements = [
+                el for el in elements
+                if not (el.get("tag") == "a" and el.get("area", 0) < thresh)
+            ]
+
+        # Confused persona hard rule: prefer prominent buttons over links
+        if persona_cfg and persona_cfg.hard_rules.get("prefer_prominent_buttons"):
+            elements.sort(
+                key=lambda el: 0 if el.get("tag") in ("button", "input") else 1
+            )
+
+        return elements
     except Exception as e:
         print(f"Error extracting interactive elements: {e}")
         return []
@@ -255,24 +265,26 @@ def normalize_target(target: str) -> str:
         return f'[data-uxg-id="uxg-{target}"]'
     return target
 
-async def perform_action(page: Page, action: str, target: str, value: str = ""):
+async def perform_action(page: Page, action: str, target: str, value: str = "", timeout: float = 3.0, click_count: int = 1):
     """
-    Performs click, type, or scroll action with visibility checks and fallbacks.
+    Performs click, type, or scroll action with visibility checks, timeouts, and fallbacks.
+    Supports multi-click (rage-click) via click_count and persona-configured timeouts.
     Returns (success: bool, error_msg: str | None).
     """
     selector = normalize_target(target)
+    timeout_ms = int(timeout * 1000)
     if action == "click":
         try:
             loc = page.locator(selector).first
-            await loc.wait_for(state="visible", timeout=3000)
-            await loc.scroll_into_view_if_needed(timeout=2000)
-            await loc.click(timeout=3000)
+            await loc.wait_for(state="visible", timeout=timeout_ms)
+            await loc.scroll_into_view_if_needed(timeout=timeout_ms)
+            await loc.click(timeout=timeout_ms, click_count=click_count)
             return True, None
         except Exception as e1:
             # Fallback 1: force click in case of overlay/clipping
             try:
                 loc = page.locator(selector).first
-                await loc.click(force=True, timeout=2000)
+                await loc.click(force=True, timeout=timeout_ms, click_count=click_count)
                 return True, None
             except Exception:
                 pass
@@ -280,7 +292,7 @@ async def perform_action(page: Page, action: str, target: str, value: str = ""):
             try:
                 clean_text = target.replace('[data-uxg-id="', '').replace('"]', '').strip()
                 loc = page.get_by_text(clean_text, exact=False).first
-                await loc.click(timeout=2000)
+                await loc.click(timeout=timeout_ms, click_count=click_count)
                 return True, None
             except Exception:
                 return False, f"Element '{target}' is not visible or interactable"
@@ -288,9 +300,9 @@ async def perform_action(page: Page, action: str, target: str, value: str = ""):
     elif action == "type":
         try:
             loc = page.locator(selector).first
-            await loc.wait_for(state="visible", timeout=3000)
-            await loc.scroll_into_view_if_needed(timeout=2000)
-            await loc.fill(value, timeout=3000)
+            await loc.wait_for(state="visible", timeout=timeout_ms)
+            await loc.scroll_into_view_if_needed(timeout=timeout_ms)
+            await loc.fill(value, timeout=timeout_ms)
             return True, None
         except Exception as e:
             return False, f"Could not type into '{target}': {str(e)}"
@@ -400,10 +412,11 @@ Respond ONLY with a valid JSON object:
 
 MAX_AGENT_STEPS = 25
 
-async def run_agent_loop(page: Page, task: str, persona: str, queue: asyncio.Queue, max_steps: int = MAX_AGENT_STEPS, session_id: str | None = None, session_data: dict | None = None):
-    persona_guide = PERSONA_GUIDES.get(persona, PERSONA_GUIDES["pro_tester"])
+async def run_agent_loop(page: Page, task: str, persona: str, queue: asyncio.Queue, max_steps: int = MAX_AGENT_STEPS, session_id: str | None = None, session_data: dict | None = None, emit_done: bool = True):
+    persona_cfg = get_persona_config(persona)
+    persona_guide = persona_cfg.behavior_rules
     await queue.put({
-        "thought": f"Initializing agent as {persona} persona for task: '{task}' (Max Steps: {max_steps})",
+        "thought": f"Initializing agent as {persona_cfg.label} ({persona}) for task: '{task}' (Max Steps: {max_steps})",
         "session_id": session_id,
         "task": task,
         "persona": persona,
@@ -412,6 +425,13 @@ async def run_agent_loop(page: Page, task: str, persona: str, queue: asyncio.Que
     last_error: str | None = None
     consecutive_errors = 0
     steps: list[Step] = []
+
+    # Persona hard rule tracking
+    slow_steps_count = 0
+    no_change_click_count = 0
+    visited_control_categories: set[str] = set()
+    small_tap_targets: list[tuple[str, int, int]] = []
+    elements_by_id: dict[str, dict] = {}
 
     claimed_outcome: str = "in_progress"
     verified_outcome: str = "in_progress"
@@ -451,7 +471,7 @@ async def run_agent_loop(page: Page, task: str, persona: str, queue: asyncio.Que
             pass
 
     for step in range(max_steps):
-        await settle(page)
+        await settle(page, extra=persona_cfg.timeouts.get("settle_timeout", 0.5))
         tag = f"Step {step + 1} · "
         url_before = page.url
 
@@ -459,17 +479,19 @@ async def run_agent_loop(page: Page, task: str, persona: str, queue: asyncio.Que
         step_console_errors.clear()
         step_failed_requests.clear()
 
-        # 1. Take current screenshot
+        # 1. Take current screenshot and collect automated evidence
         screenshot_bytes = await page.screenshot(type="jpeg", quality=50)
         base64_image = base64.b64encode(screenshot_bytes).decode('utf-8')
+        step_evidence = await collect_step_evidence(page)
 
-
-        # 2. Extract visible interactive elements from DOM
-        visible_elements = await extract_visible_interactive_elements(page)
+        # 2. Extract visible interactive elements from DOM with persona filters
+        visible_elements = await extract_visible_interactive_elements(page, persona_cfg)
+        elements_by_id = {el["id"]: el for el in visible_elements}
         labels = {el["id"]: el["text"] for el in visible_elements}
         
         elements_summary = "\n".join([
             f"- [{el['id']}] <{el['tag']}> \"{el['text']}\"" +
+            (f" ({el['width']}x{el['height']}px)" if el.get('width') else "") +
             (f" (placeholder: \"{el['placeholder']}\")" if el.get('placeholder') else "") +
             (f" (href: {el['href']})" if el.get('href') else "")
             for el in visible_elements
@@ -479,15 +501,44 @@ async def run_agent_loop(page: Page, task: str, persona: str, queue: asyncio.Que
         error_context = f"\nWARNING: Your previous action failed: {last_error}. Pick a different visible element or approach.\n" if last_error else ""
 
         tester_protocol = ""
-        if persona == "pro_tester":
-            tester_protocol = """
+        if persona_cfg.name == "pro_tester":
+            remaining = [c for c in persona_cfg.hard_rules.get("systematic_categories", ["button", "input", "select", "link"]) if c not in visited_control_categories]
+            tester_protocol = f"""
 CRITICAL PROFESSIONAL UX TESTER PROTOCOL:
 - Systematically work through visible buttons, form inputs, and layout elements on screen.
+- Audited control categories so far: {list(visited_control_categories) or ['none']}. Remaining to audit: {remaining or ['all audited']}.
 - Rigorously check for UX defects and bugs: unresponsive buttons, missing validation feedback, misaligned layout, unclear copy, or dead ends.
 - For input fields: test entering realistic or boundary inputs to verify handling.
 - For buttons: test and verify that they trigger expected states, submit forms, or provide clear feedback.
 - Format the "thought" field in your JSON as: "[UX Bug: <details>]" or "[UX Observation: <details>]" followed by your next test objective.
 - Do NOT finish with "done" until you have audited the key interactive buttons and fields relevant to the task.
+"""
+        elif persona_cfg.name == "impatient":
+            tester_protocol = f"""
+IMPATIENT USER PROTOCOL:
+- You demand immediate feedback and click without reading long copy.
+- If an element produces no visual response after clicking, rage-click it repeatedly.
+- Slow steps (>2.0s) cause frustration. Slow steps encountered so far: {slow_steps_count}/3.
+"""
+        elif persona_cfg.name == "confused":
+            tester_protocol = """
+CONFUSED USER PROTOCOL:
+- You strongly prefer prominent, clearly marked buttons over text links.
+- Interpret all button labels and text strictly literally word-for-word.
+- If a control is icon-only without a text label, observe and hesitate before acting.
+"""
+        elif persona_cfg.name == "skeptic":
+            tester_protocol = """
+SKEPTICAL USER PROTOCOL:
+- Refuse to provide real personal data (email, phone, address, financial info) into unverified forms.
+- Look for trust signals: privacy policy links, user reviews, and transparent pricing.
+"""
+        elif persona_cfg.name == "mobile":
+            tester_protocol = """
+MOBILE TOUCH USER PROTOCOL:
+- You are on a 390x844 touchscreen device using tap gestures.
+- Tap targets must meet the 44x44px mobile touch standard.
+- Flag any interactive controls smaller than 44px as accessibility/ergonomic issues.
 """
 
         prompt = f"""You are testing a website as a UX persona.
@@ -627,17 +678,18 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
 
                 LAST_REPORT.clear()
                 LAST_REPORT.update(partial_report)
-                await queue.put({
-                    "thought": "Agent loop aborted due to LLM unavailability.",
-                    "done": True,
-                    "session_id": session_id,
-                    "status": "aborted_llm_unavailable",
-                    "outcome": OUTCOME_ERROR,
-                    "outcome_reason": f"LLM unavailable: {unavail_err}",
-                    "claimed_outcome": OUTCOME_ERROR,
-                    "verified_outcome": OUTCOME_ERROR,
-                })
-                return
+                await queue.put({"thought": "Agent loop aborted due to LLM unavailability."})
+                if emit_done:
+                    await queue.put({
+                        "done": True,
+                        "session_id": session_id,
+                        "status": "aborted_llm_unavailable",
+                        "outcome": OUTCOME_ERROR,
+                        "outcome_reason": f"LLM unavailable: {unavail_err}",
+                        "claimed_outcome": OUTCOME_ERROR,
+                        "verified_outcome": OUTCOME_ERROR,
+                    })
+                return partial_report
             except Exception as parse_err:
                 failed_gen = extract_failed_generation_text(parse_err)
                 if failed_gen:
@@ -661,7 +713,58 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
             value = decision.get("value", "")
             friction = decision.get("friction") if isinstance(decision.get("friction"), dict) else {}
             m = re.search(r"uxg-\d+", target or "")
-            label = labels.get(m.group(0), target) if m else (target or "")
+            target_id = m.group(0) if m else target
+            label = labels.get(target_id, target) if target_id else (target or "")
+            target_el = elements_by_id.get(target_id)
+
+            # Hard Rule 1 (confused): Hesitate on icon-only controls
+            if persona_cfg.hard_rules.get("hesitate_on_icon_only") and target_el and target_el.get("is_icon_only"):
+                hesitate_sec = persona_cfg.hard_rules.get("hesitation_delay", 0.6)
+                await asyncio.sleep(hesitate_sec)
+                await queue.put({"thought": f"{tag}[Hesitation] Confused user paused to scrutinize icon-only control '{label}' with no text label."})
+                if not friction.get("type"):
+                    friction = {
+                        "type": "terminology",
+                        "note": f"Confused user hesitated on icon-only control '{label}' lacking a descriptive text label."
+                    }
+
+            # Hard Rule 2 (skeptic): Refuse real personal data, inject fake data and flag form
+            if persona_cfg.hard_rules.get("refuse_personal_data") and action == "type":
+                field_type = target_el.get("type", "") if target_el else ""
+                if is_personal_data_field(label, target, field_type):
+                    fake_val = get_fake_personal_data(label, target)
+                    value = fake_val
+                    await queue.put({"thought": f"{tag}[Privacy Defense] Skeptical user refused to submit real personal data for '{label}'. Substituted synthetic data: '{fake_val}'."})
+                    if not friction.get("type"):
+                        friction = {
+                            "type": "trust",
+                            "note": f"Skeptical user flagged personal data form field '{label}' and entered synthetic data."
+                        }
+
+            # Hard Rule 3 (mobile): Detect and flag tap targets below 44px
+            if persona_cfg.hard_rules.get("min_tap_target_size") and target_el:
+                min_size = persona_cfg.hard_rules["min_tap_target_size"]
+                w = target_el.get("width", 50)
+                h = target_el.get("height", 50)
+                if w < min_size or h < min_size:
+                    small_tap_targets.append((label, w, h))
+                    await queue.put({"thought": f"{tag}[Touch Ergonomics] Warning: Tap target '{label}' is only {w}x{h}px, below the {min_size}x{min_size}px minimum touch target standard."})
+                    if not friction.get("type"):
+                        friction = {
+                            "type": "accessibility",
+                            "note": f"Touch tap target '{label}' is only {w}x{h}px, violating the {min_size}x{min_size}px mobile touch target guideline."
+                        }
+
+            # Hard Rule 4 (impatient): Rage-click after 2 no-change clicks
+            click_count = 1
+            rage_thresh = persona_cfg.hard_rules.get("rage_click_no_change_threshold")
+            if rage_thresh and action == "click" and no_change_click_count >= rage_thresh:
+                click_count = 3
+                await queue.put({"thought": f"{tag}[RAGE-CLICKING] Target '{label}' produced no visual change after {no_change_click_count} clicks; rage-clicking 3x rapidly in frustration!"})
+                friction = {
+                    "type": "bug",
+                    "note": f"User rage-clicked 3x on '{label}' after {no_change_click_count} consecutive clicks produced no page state change."
+                }
 
             def record(
                 ok: bool,
@@ -688,6 +791,10 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
                     dead_click=dead_click,
                     console_errors=list(console_errors or []),
                     failed_requests=list(failed_requests or []),
+                    axe_violations=list(step_evidence.get("axe_violations", [])),
+                    tap_targets=list(step_evidence.get("tap_targets", [])),
+                    contrast_issues=list(step_evidence.get("contrast_issues", [])),
+                    overlapping_elements=list(step_evidence.get("overlapping_elements", [])),
                 )
                 steps.append(step_obj)
                 if session_data is not None and "steps" in session_data:
@@ -781,9 +888,10 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
                     except Exception:
                         dom_before = ""
 
+                action_timeout = persona_cfg.timeouts.get("action_timeout", 3.0)
                 t0 = time.time()
-                success, err = await perform_action(page, action, target, value)
-                await settle(page)
+                success, err = await perform_action(page, action, target, value, timeout=action_timeout, click_count=click_count)
+                await settle(page, extra=persona_cfg.timeouts.get("settle_timeout", 0.5))
                 t1 = time.time()
                 step_duration = round(t1 - t0, 3)
 
@@ -796,6 +904,18 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
                     except Exception:
                         pass
 
+                if is_dead_click:
+                    no_change_click_count += 1
+                else:
+                    no_change_click_count = 0
+
+                # Track pro_tester visited categories
+                if target_el:
+                    tag_name = target_el.get("tag", "").lower()
+                    cat = "link" if tag_name == "a" else tag_name
+                    if cat in ("button", "input", "select", "link", "textarea"):
+                        visited_control_categories.add(cat)
+
                 record(
                     success,
                     shot_for_step=shot,
@@ -805,6 +925,31 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
                     console_errors=step_console_errors,
                     failed_requests=step_failed_requests,
                 )
+
+                # Hard Rule 5 (impatient): Track slow steps and abandon after max_slow_steps
+                slow_threshold = persona_cfg.timeouts.get("slow_step_threshold", 4.0)
+                if step_duration > slow_threshold:
+                    slow_steps_count += 1
+                    max_slow = persona_cfg.hard_rules.get("max_slow_steps")
+                    if max_slow:
+                        await queue.put({"thought": f"{tag}[Slow Step #{slow_steps_count}] Action took {step_duration}s (exceeds {slow_threshold}s limit)."})
+                        if slow_steps_count >= max_slow:
+                            claimed_outcome = OUTCOME_ABANDONED
+                            verified_outcome = OUTCOME_ABANDONED
+                            final_outcome = OUTCOME_ABANDONED
+                            final_outcome_reason = f"Impatient user abandoned task: encountered {slow_steps_count} slow steps exceeding {slow_threshold}s response threshold."
+                            await queue.put({
+                                "step": step + 1,
+                                "action": "abort",
+                                "thought": f"{tag}Abandoned task: {final_outcome_reason}",
+                                "screenshot": shot,
+                                "claimed_outcome": claimed_outcome,
+                                "verified_outcome": verified_outcome,
+                                "outcome": final_outcome,
+                                "outcome_reason": final_outcome_reason,
+                            })
+                            break
+
                 if success:
                     last_error = None
                     consecutive_errors = 0
@@ -895,6 +1040,32 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
     report["baseline_failed"] = session_dict["baseline_failed"]
     report["baseline_note"] = session_dict["baseline_note"]
     report["baseline_path"] = session_dict["baseline_path"]
+
+    # Hard Rule 6 (skeptic): Audit trust signals (privacy policy, reviews, pricing visibility) and record absence
+    if persona_cfg.hard_rules.get("check_trust_signals"):
+        try:
+            page_text = await page.evaluate("() => document.body ? document.body.innerText : ''")
+            trust_findings = audit_trust_signals_in_page(page_text, visible_elements or [])
+            for tf in trust_findings:
+                if not any(tf["title"].lower() in f.get("title", "").lower() for f in report.get("findings", [])):
+                    report["findings"].append(tf)
+        except Exception as e:
+            print(f"Trust signal audit error: {e}")
+
+    # Hard Rule 7 (mobile): Record touch target accessibility finding if small tap targets encountered
+    if persona_cfg.hard_rules.get("min_tap_target_size") and small_tap_targets:
+        has_tap_finding = any("tap target" in f.get("title", "").lower() for f in report.get("findings", []))
+        if not has_tap_finding:
+            examples = ", ".join(f"'{lbl}' ({w}x{h}px)" for lbl, w, h in small_tap_targets[:3])
+            report["findings"].append({
+                "title": "Mobile Ergonomics: Touch Target Below 44px",
+                "severity": "high",
+                "evidence_steps": [s.n for s in steps if s.friction_type == "accessibility"],
+                "what_happened": f"Interactive mobile controls ({examples}) fall below the 44x44px minimum touch target standard.",
+                "impact": "Increases mis-taps, precision fatigue, and task abandonment on mobile touchscreen devices.",
+                "recommendation": "Expand bounding box or touch padding so interactive elements meet or exceed 44x44px on mobile viewports.",
+            })
+
     report["bugs"] = sum(1 for s in steps if s.friction_type == "bug")
     report["session_id"] = session_id
     report["url"] = session_data.get("url", page.url) if session_data else page.url
@@ -935,14 +1106,15 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
     LAST_REPORT.clear()
     LAST_REPORT.update(report)
     await queue.put({"thought": "Agent loop finished."})
-    await queue.put({
-        "done": True,
-        "session_id": session_id,
-        "outcome": final_outcome,
-        "outcome_reason": final_outcome_reason,
-        "claimed_outcome": claimed_outcome,
-        "verified_outcome": verified_outcome,
-    })
+    if emit_done:
+        await queue.put({
+            "done": True,
+            "session_id": session_id,
+            "outcome": final_outcome,
+            "outcome_reason": final_outcome_reason,
+            "claimed_outcome": claimed_outcome,
+            "verified_outcome": verified_outcome,
+        })
 
     if hasattr(page, "remove_listener"):
         try:
@@ -954,4 +1126,6 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
                 r2.close()
         except Exception:
             pass
+
+    return report
 

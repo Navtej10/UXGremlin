@@ -9,6 +9,7 @@ export interface SessionInfo {
   task: string;
   persona: string;
   baseline?: boolean;
+  runs?: number;
 }
 
 function App() {

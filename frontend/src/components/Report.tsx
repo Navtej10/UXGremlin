@@ -35,6 +35,12 @@ interface Finding {
   what_happened: string;
   impact: string;
   recommendation: string;
+  consistency?: 'consistent' | 'occasional';
+  step_number?: number;
+  screenshot?: string | null;
+  bounding_box?: { x: number; y: number; width: number; height: number } | null;
+  suggested_fix?: string;
+  selector?: string;
 }
 
 interface SabotageReport {
@@ -49,7 +55,21 @@ interface SabotageReport {
   baseline_failed?: boolean;
   baseline_note?: string;
   expected_steps?: number;
-  score: { total: number; label: string; parts: ScorePart[]; steps_taken: number; ideal_steps: number };
+  runs?: number;
+  score_min?: number;
+  score_max?: number;
+  score_mean?: number;
+  score: {
+    total: number;
+    label: string;
+    parts: ScorePart[];
+    steps_taken: number;
+    ideal_steps: number;
+    runs?: number;
+    score_min?: number;
+    score_max?: number;
+    score_mean?: number;
+  };
   verdict: string;
   findings: Finding[];
   bugs?: number;
@@ -72,6 +92,7 @@ const PERSONA_NAMES: Record<string, string> = {
   impatient: '😈 Impatient User',
   confused: '😵‍💫 Confused User',
   skeptic: '🧐 Skeptical User',
+  mobile: '📱 Mobile User',
 };
 
 const OUTCOME_CONFIG: Record<
@@ -284,7 +305,19 @@ export function Report({ session, history, onRestart }: ReportProps) {
               <p className="text-center text-gray-500 text-sm">Generating report…</p>
             ) : (
               <>
-                <div className={`text-6xl font-black text-center ${scoreColor}`}>{report.score.total}</div>
+                <div className="flex items-center justify-center gap-4">
+                  <div className={`text-6xl font-black ${scoreColor}`}>{report.score.total}</div>
+                  {((report.runs && report.runs > 1) || (report.score.runs && report.score.runs > 1)) && (
+                    <div className="text-left bg-gray-900/90 border border-gray-700/70 rounded-lg px-3 py-1.5 shadow-sm">
+                      <div className="text-sm font-extrabold text-white tracking-wide">
+                        {report.score_min ?? report.score.score_min}–{report.score_max ?? report.score.score_max}
+                      </div>
+                      <div className="text-[11px] text-gremlin-green font-medium">
+                        consistent across {report.runs ?? report.score.runs} runs
+                      </div>
+                    </div>
+                  )}
+                </div>
                 <p className="text-center text-sm mt-1 text-gray-400">
                   {report.score.label} friction · {report.score.steps_taken} steps taken, about {report.score.ideal_steps} expected
                   {report.baseline_failed ? ' (heuristic fallback)' : ''}
@@ -331,12 +364,64 @@ export function Report({ session, history, onRestart }: ReportProps) {
             <div key={f.title} className="p-4 bg-black/40 border border-gray-800 rounded-lg">
               <div className="flex items-center justify-between">
                 <h3 className="font-semibold text-sm">{f.title}</h3>
-                <span className="text-xs uppercase text-red-400">{f.severity}</span>
+                <div className="flex items-center gap-2">
+                  {f.consistency && (
+                    <span
+                      className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded border ${
+                        f.consistency === 'consistent'
+                          ? 'bg-emerald-950/80 text-emerald-400 border-emerald-500/40'
+                          : 'bg-gray-800/80 text-gray-400 border-gray-700'
+                      }`}
+                    >
+                      {f.consistency}
+                    </span>
+                  )}
+                  <span className="text-xs uppercase text-red-400">{f.severity}</span>
+                </div>
               </div>
               <p className="mt-2 text-sm text-gray-300">{f.what_happened}</p>
               <p className="mt-1 text-xs text-gray-500">Impact: {f.impact}</p>
-              <p className="mt-1 text-xs text-gremlin-green">Fix: {f.recommendation}</p>
-              <div className="mt-2 flex flex-wrap gap-1">
+
+              {f.suggested_fix ? (
+                <div className="mt-2.5 p-2.5 bg-black/70 border border-emerald-500/30 rounded font-mono text-[11px] text-gremlin-green whitespace-pre-wrap shadow-inner">
+                  <div className="text-[9px] uppercase tracking-wider text-gray-400 font-sans font-bold mb-1 flex items-center justify-between">
+                    <span>Suggested Fix</span>
+                    {f.selector && <span className="text-gray-500 font-mono text-[9px] lowercase">{f.selector}</span>}
+                  </div>
+                  {f.suggested_fix}
+                </div>
+              ) : (
+                <p className="mt-1 text-xs text-gremlin-green">Fix: {f.recommendation}</p>
+              )}
+
+              {f.screenshot && (
+                <div className="mt-3 overflow-hidden rounded-lg border border-red-500/40 bg-black/80 shadow-md">
+                  <div className="px-2.5 py-1 text-[10px] uppercase tracking-wider text-red-400 bg-red-950/40 border-b border-red-500/20 flex items-center justify-between font-semibold">
+                    <span>Defect Highlight (Step {f.step_number || (f.evidence_steps && f.evidence_steps[0]) || 1})</span>
+                    {f.bounding_box && (
+                      <span className="text-gray-400 font-mono text-[9px]">
+                        [{f.bounding_box.width}×{f.bounding_box.height}px]
+                      </span>
+                    )}
+                  </div>
+                  <div
+                    className="cursor-pointer group relative overflow-hidden bg-gray-950/80 p-1 flex items-center justify-center"
+                    onClick={() => {
+                      const stepNum = f.step_number || (f.evidence_steps && f.evidence_steps[0]);
+                      if (stepNum) jumpToStep(stepNum);
+                    }}
+                    title="Click to jump to step"
+                  >
+                    <img
+                      src={`data:image/jpeg;base64,${f.screenshot}`}
+                      alt={f.title}
+                      className="max-h-48 w-full object-contain rounded transition group-hover:scale-[1.01]"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="mt-2.5 flex flex-wrap gap-1">
                 {f.evidence_steps.map((n) => (
                   <button
                     key={n}

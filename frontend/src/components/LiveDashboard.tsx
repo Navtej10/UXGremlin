@@ -9,6 +9,7 @@ interface LiveDashboardProps {
     url: string;
     task: string;
     persona: string;
+    runs?: number;
   };
   onComplete: (history: HistoryItem[]) => void;
 }
@@ -98,8 +99,15 @@ export function LiveDashboard({ session, onComplete }: LiveDashboardProps) {
             {session.persona === 'pro_tester' ? '🎯 Professional UX Tester' :
              session.persona === 'impatient' ? '😈 Impatient User' :
              session.persona === 'confused' ? '😵‍💫 Confused User' :
-             session.persona === 'skeptic' ? '🧐 Skeptical User' : session.persona}
+             session.persona === 'skeptic' ? '🧐 Skeptical User' :
+             session.persona === 'mobile' ? '📱 Mobile User' : session.persona}
           </span></div>
+          {session.runs && session.runs > 1 && (
+            <>
+              <div className="h-4 w-px bg-gray-700"></div>
+              <div className="text-gray-400">Audit: <span className="text-gremlin-green font-mono font-semibold">{session.runs} Runs</span></div>
+            </>
+          )}
         </div>
         <button
           onClick={() => onComplete(historyRef.current)}
