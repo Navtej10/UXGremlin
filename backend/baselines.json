@@ -100,5 +100,33 @@
     "completed": true,
     "error": "",
     "timestamp": 1792173702.1327674
+  },
+  "https://www.expantra.me||find pricing faq & cancel flow": {
+    "url": "https://www.expantra.me/",
+    "task": "Find pricing FAQ & cancel flow",
+    "expected_steps": null,
+    "path": [
+      {
+        "step": 1,
+        "action": "scroll",
+        "target": "EXPANTRA",
+        "url": "https://www.expantra.me/"
+      },
+      {
+        "step": 2,
+        "action": "scroll",
+        "target": "Start Your Project",
+        "url": "https://www.expantra.me/"
+      },
+      {
+        "step": 3,
+        "action": "scroll",
+        "target": "None",
+        "url": "https://www.expantra.me/"
+      }
+    ],
+    "completed": false,
+    "error": "Page URL and DOM content hash remained unchanged for 3 consecutive steps. Hint: Page state is static. An overlay, modal, or unfulfilled form requirement may be blocking progress. Check for error messages or dismissal buttons.",
+    "timestamp": 1792348105.625044
   }
 }

@@ -13,7 +13,6 @@ import {
   ExternalLink,
   AlertTriangle,
   Activity,
-  Sparkles,
   Info,
 } from 'lucide-react';
 import { ComparisonSummary, type ComparisonItem } from './ComparisonSummary';
@@ -394,8 +393,9 @@ export function Report({
         <div className="flex items-center gap-3">
           <button
             type="button"
-            onClick={() => setViewMode('score')}
-            className="flex items-center gap-2 cursor-pointer select-none text-left"
+            onClick={onRestart}
+            className="flex items-center gap-2 cursor-pointer select-none text-left hover:opacity-80 transition-opacity"
+            title="Return to Launchpad (Home)"
           >
             <Gremlin pose="completion" size="sm" animate={false} />
             <div>
@@ -476,18 +476,6 @@ export function Report({
         </div>
       </header>
 
-      {/* Scope Note Banner (Always Shown) */}
-      <div className="bg-lilac/30 border-b border-lilac-text/15 px-6 md:px-10 py-2.5 flex items-center justify-between text-xs text-lilac-text shrink-0 gap-4">
-        <div className="flex items-center gap-2">
-          <Sparkles className="w-4 h-4 shrink-0 text-lilac-text" />
-          <span>
-            <strong>Bounded exploration note:</strong> This report reflects behavioral simulation of actively assigned personas ({report?.personas?.join(', ') || session.persona}), across {totalSteps} executed steps. It is not an exhaustive crawler audit.
-          </span>
-        </div>
-        <div className="hidden lg:flex items-center gap-2 font-mono text-[11px] text-muted">
-          <span>Session: {currentSessionId ? currentSessionId.slice(0, 10) : 'live'}</span>
-        </div>
-      </div>
 
       {/* ========================================================================= */}
       {/* VIEW 1: THE SCORE OVERVIEW                                                */}
@@ -610,32 +598,6 @@ export function Report({
             fallbackItem={fallbackComparisonItem}
           />
 
-          {/* Action Card to Proceed to Detailed Explanation */}
-          <div className="w-full bg-surface border border-stone rounded-2xl p-6 flex flex-col sm:flex-row items-center justify-between gap-5 shadow-card hover:border-gremlin/50 transition">
-            <div className="flex items-center gap-4">
-              <div className="w-12 h-12 rounded-xl bg-lilac border border-lilac-text/25 flex items-center justify-center text-lilac-text shrink-0">
-                <FileText className="w-6 h-6" />
-              </div>
-              <div>
-                <h3 className="text-base font-bold text-ink">
-                  Detailed Score Breakdown &amp; Usability Findings
-                </h3>
-                <p className="text-xs text-muted mt-1 max-w-xl leading-relaxed">
-                  Inspect cognitive friction penalties, verified task outcomes, and prioritized usability vulnerabilities with suggested code fixes.
-                </p>
-              </div>
-            </div>
-
-            <Button
-              variant="primary"
-              size="md"
-              onClick={() => handleViewExplanation(selectedPersona)}
-              rightIcon={<ArrowRight className="w-4 h-4 text-ink" />}
-              className="shrink-0 w-full sm:w-auto"
-            >
-              View Score &amp; Findings
-            </Button>
-          </div>
         </main>
       )}
 

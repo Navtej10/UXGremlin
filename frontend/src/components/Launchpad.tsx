@@ -3,11 +3,7 @@ import {
   Link,
   Zap,
   Check,
-  Sparkles,
-  Camera,
-  Terminal,
-  Code2,
-  Eye,
+  Info,
   Sliders,
   ChevronDown,
 } from 'lucide-react';
@@ -165,7 +161,7 @@ export function Launchpad({ onLaunch }: LaunchpadProps) {
   const isCompareMode = selectedPersonas.length > 1;
 
   return (
-    <div className="min-h-screen bg-canvas text-ink flex flex-col antialiased">
+    <div className="min-h-screen bg-canvas text-ink flex flex-col antialiased overflow-x-hidden">
       {/* Top Application Header */}
       <header className="h-16 border-b border-stone bg-surface px-6 md:px-10 flex items-center justify-between shrink-0 sticky top-0 z-20">
         <div className="flex items-center gap-3">
@@ -179,10 +175,6 @@ export function Launchpad({ onLaunch }: LaunchpadProps) {
         </div>
 
         <div className="flex items-center gap-3 text-xs">
-          <div className="hidden md:flex items-center gap-2 px-3 py-1 bg-canvas border border-stone rounded-full font-mono text-[11px] text-muted">
-            <span className="w-2 h-2 rounded-full bg-gremlin-dark" />
-            <span>Autonomous Runner: v2.4 Ready</span>
-          </div>
           <Badge variant="running">Runs today: 4</Badge>
         </div>
       </header>
@@ -201,10 +193,6 @@ export function Launchpad({ onLaunch }: LaunchpadProps) {
             <p className="text-sm text-muted max-w-2xl leading-relaxed">
               Configure an autonomous browser session to test a specific user flow and uncover silent usability friction before your customers do.
             </p>
-          </div>
-
-          <div className="hidden lg:flex items-center gap-4 shrink-0">
-            <Gremlin pose="idle" size="hero" animate={true} />
           </div>
         </div>
 
@@ -255,7 +243,7 @@ export function Launchpad({ onLaunch }: LaunchpadProps) {
                     id="task"
                     required
                     rows={3}
-                    placeholder="Sign up for a free trial, select the Starter tier, and attempt to invite a teammate without getting stuck."
+                    placeholder="Sign up for the cheapest plan, navigate to checkout, or describe any specific user flow to test..."
                     value={task}
                     onChange={(e) => setTask(e.target.value)}
                     bottomRightHint={task.length > 0 ? `~${Math.ceil(task.length / 4)} tokens` : undefined}
@@ -327,11 +315,10 @@ export function Launchpad({ onLaunch }: LaunchpadProps) {
                               togglePersona(p.id);
                             }
                           }}
-                          className={`p-3.5 rounded-2xl border text-left transition-all duration-150 flex flex-col justify-between gap-3 cursor-pointer select-none focus-visible:outline-2 focus-visible:outline-gremlin-dark focus-visible:outline-offset-2 ${
-                            isSelected
-                              ? 'bg-gremlin/15 border-2 border-gremlin shadow-subtle'
-                              : 'bg-surface border-stone hover:border-muted/50 hover:bg-canvas/60'
-                          }`}
+                          className={`p-3.5 rounded-2xl border text-left transition-all duration-150 flex flex-col justify-between gap-3 cursor-pointer select-none focus-visible:outline-2 focus-visible:outline-gremlin-dark focus-visible:outline-offset-2 ${isSelected
+                            ? 'bg-gremlin/15 border-2 border-gremlin shadow-subtle'
+                            : 'bg-surface border-stone hover:border-muted/50 hover:bg-canvas/60'
+                            }`}
                         >
                           <div>
                             <div className="flex items-center justify-between gap-2 mb-1.5">
@@ -346,11 +333,10 @@ export function Launchpad({ onLaunch }: LaunchpadProps) {
                                   </span>
                                 )}
                                 <div
-                                  className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 border transition-all ${
-                                    isSelected
-                                      ? 'bg-gremlin-dark border-gremlin-dark text-surface'
-                                      : 'border-stone bg-canvas'
-                                  }`}
+                                  className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 border transition-all ${isSelected
+                                    ? 'bg-gremlin-dark border-gremlin-dark text-surface'
+                                    : 'border-stone bg-canvas'
+                                    }`}
                                 >
                                   {isSelected && <Check className="w-3 h-3 stroke-[3]" />}
                                 </div>
@@ -397,9 +383,8 @@ export function Launchpad({ onLaunch }: LaunchpadProps) {
                         Desktop Chrome 1440×900 · Max 25 steps
                       </span>
                       <ChevronDown
-                        className={`w-3.5 h-3.5 transition-transform ${
-                          showAdvanced ? 'rotate-180' : ''
-                        }`}
+                        className={`w-3.5 h-3.5 transition-transform ${showAdvanced ? 'rotate-180' : ''
+                          }`}
                       />
                     </div>
                   </button>
@@ -450,95 +435,48 @@ export function Launchpad({ onLaunch }: LaunchpadProps) {
                   </Button>
                 </div>
 
-                {/* Sandboxed notice footer */}
-                <div className="text-center text-[11px] text-muted font-mono flex items-center justify-center gap-2 select-none">
-                  <span className="w-1.5 h-1.5 rounded-full bg-gremlin-dark" />
-                  <span>Sandboxed Chromium Container (Playwright) · Bounded exploration</span>
+                {/* Scope Clarification Notice directly under the button */}
+                <div className="flex items-center justify-center gap-1.5 text-xs text-muted text-center select-none pt-0.5">
+                  <Info className="w-3.5 h-3.5 shrink-0" />
+                  <span>Bounded exploration, not an exhaustive audit. One task, your chosen personas.</span>
                 </div>
               </form>
             </Card>
           </div>
 
-          {/* Right Information Rail (4 Cols on desktop) */}
-          <div className="lg:col-span-4 flex flex-col gap-6">
-            {/* Lilac "What to Expect" Scope Card */}
-            <Card className="p-6 bg-lilac/30 border-lilac-text/20">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2 text-xs font-bold text-lilac-text">
-                  <Sparkles className="w-4 h-4 text-lilac-text" />
-                  <span>What to expect</span>
-                </div>
-                <Badge variant="ai-lilac">LIVE AGENT</Badge>
-              </div>
-
-              <p className="text-xs text-ink/80 leading-relaxed font-medium">
-                Bounded exploration, not an exhaustive audit. The agent simulates one realistic visitor session with behavioral traits from your chosen persona.
-              </p>
-
-              <div className="mt-4 pt-3 border-t border-lilac-text/15 space-y-2.5">
-                <span className="text-[10px] uppercase font-bold tracking-wider text-lilac-text block">
-                  Diagnostic Outputs Captured:
-                </span>
-
-                <div className="flex items-start gap-2 text-xs text-ink/90">
-                  <Camera className="w-3.5 h-3.5 text-lilac-text shrink-0 mt-0.5" />
-                  <span><strong>DOM screenshots</strong>: captured before &amp; after each action.</span>
-                </div>
-
-                <div className="flex items-start gap-2 text-xs text-ink/90">
-                  <Terminal className="w-3.5 h-3.5 text-lilac-text shrink-0 mt-0.5" />
-                  <span><strong>Thought trail</strong>: inner monologue explaining friction.</span>
-                </div>
-
-                <div className="flex items-start gap-2 text-xs text-ink/90">
-                  <Code2 className="w-3.5 h-3.5 text-lilac-text shrink-0 mt-0.5" />
-                  <span><strong>DOM selectors</strong>: target elements for code reproduction.</span>
-                </div>
-
-                <div className="flex items-start gap-2 text-xs text-ink/90">
-                  <Eye className="w-3.5 h-3.5 text-lilac-text shrink-0 mt-0.5" />
-                  <span><strong>Heuristic friction penalties</strong>: cognitive load scoring.</span>
-                </div>
-              </div>
-
-              <div className="mt-4 p-3 rounded-xl bg-surface border border-lilac-text/20 text-xs text-ink leading-relaxed">
-                <strong className="text-lilac-text block text-[11px] uppercase tracking-wider mb-1">
-                  💡 Gremlin Pro-Tip:
-                </strong>
-                Specific tasks like <em>"Sign up for the cheapest plan"</em> yield sharper, higher-severity findings than open-ended browsing.
-              </div>
-            </Card>
-
-            {/* Simulated Live Runner Preview Frame */}
-            <Card className="p-4 overflow-hidden">
-              <div className="flex items-center justify-between mb-3 text-xs">
-                <span className="font-semibold text-ink">Simulated Runner Preview</span>
-                <span className="w-2 h-2 rounded-full bg-gremlin-dark" />
-              </div>
-
-              {/* Mini Browser Frame */}
-              <div className="bg-canvas border border-stone rounded-xl overflow-hidden">
-                <div className="h-6 px-2.5 bg-surface border-b border-stone flex items-center justify-between">
-                  <div className="flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-stone" />
-                    <span className="w-1.5 h-1.5 rounded-full bg-stone" />
-                    <span className="w-1.5 h-1.5 rounded-full bg-stone" />
+          {/* Right Illustration Column */}
+          <div className="col-span-1 lg:col-span-4 flex flex-col items-center justify-start self-start mt-4 lg:mt-0 lg:-mt-10 lg:-mr-10 xl:-mr-[max(2.5rem,calc((100vw-1240px)/2+2.5rem))]">
+            <div className="w-full max-w-xs lg:max-w-[560px] mx-auto -mt-4 lg:-mt-16 lg:mr-0 lg:ml-auto lg:animate-gremlin-slide-in">
+              <div className="animate-gremlin-laptop-idle">
+                {/* Soft mask fade on top edge */}
+                <div
+                  className="w-full overflow-hidden"
+                  style={{
+                    WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 14%)',
+                    maskImage: 'linear-gradient(to bottom, transparent 0%, black 14%)',
+                  }}
+                >
+                  {/* Soft mask fade on left edge */}
+                  <div
+                    className="w-full overflow-hidden"
+                    style={{
+                      WebkitMaskImage: 'linear-gradient(to right, transparent 0%, black 20%)',
+                      maskImage: 'linear-gradient(to right, transparent 0%, black 20%)',
+                    }}
+                  >
+                    <img
+                      src="/mascot/gremlin-laptop.png"
+                      alt="UXGremlin mascot typing on a laptop, ready to test your website"
+                      loading="eager"
+                      decoding="async"
+                      width={2100}
+                      height={1724}
+                      className="w-full h-auto object-contain object-right-top [mix-blend-mode:multiply] select-none pointer-events-none block"
+                    />
                   </div>
-                  <span className="font-mono text-[9px] text-muted">
-                    {url ? url.replace(/^https?:\/\//, '').slice(0, 24) : 'playwright/chromium'}
-                  </span>
-                  <div className="w-3" />
-                </div>
-                <div className="h-28 flex flex-col items-center justify-center p-4 bg-canvas text-center">
-                  <div className="px-3 py-1 rounded bg-gremlin/30 border border-gremlin text-[11px] font-mono text-ink font-bold">
-                    Target #interactive-element
-                  </div>
-                  <span className="text-[10px] text-muted font-mono mt-2">
-                    Telemetry streams live via FastAPI SSE
-                  </span>
                 </div>
               </div>
-            </Card>
+            </div>
           </div>
         </div>
       </main>

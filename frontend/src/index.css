@@ -88,6 +88,36 @@ body {
   animation: gremlin-idle 3.5s ease-in-out infinite;
 }
 
+/* Gremlin slide-in from right for Launchpad illustration */
+@keyframes gremlin-slide-in-right {
+  0% {
+    opacity: 0;
+    transform: translateX(40px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* Gentle idle float for Launchpad illustration */
+@keyframes gremlin-float-subtle {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-4px);
+  }
+}
+
+.animate-gremlin-slide-in {
+  animation: gremlin-slide-in-right 600ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.animate-gremlin-laptop-idle {
+  animation: gremlin-float-subtle 5s ease-in-out infinite;
+}
+
 /* Prefers-reduced-motion override */
 @media (prefers-reduced-motion: reduce) {
   *,
