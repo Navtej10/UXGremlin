@@ -1,6 +1,8 @@
 import { useEffect, useState, useRef } from 'react';
-import { Terminal, Activity, MonitorPlay, Maximize2, X, ShieldAlert, CheckCircle2 } from 'lucide-react';
+import { StopCircle, Maximize2, X, ShieldAlert, Monitor } from 'lucide-react';
 import { type HistoryItem } from './Report';
+import { Gremlin, GremlinSpeech } from './mascot/Gremlin';
+import { Badge, Button } from './ui';
 
 interface MultiLaneLiveDashboardProps {
   session: {
@@ -11,6 +13,7 @@ interface MultiLaneLiveDashboardProps {
     personas?: string[];
     runs?: number;
   };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   onComplete: (history: HistoryItem[], comparison?: any) => void;
 }
 
@@ -25,7 +28,7 @@ interface PersonaLaneState {
 }
 
 const PERSONA_LABELS: Record<string, { label: string; icon: string }> = {
-  pro_tester: { label: 'Professional UX Tester', icon: '🎯' },
+  pro_tester: { label: 'Pro Tester', icon: '🎯' },
   impatient: { label: 'Impatient User', icon: '😈' },
   confused: { label: 'Confused User', icon: '😵‍💫' },
   skeptic: { label: 'Skeptical User', icon: '🧐' },
@@ -45,7 +48,7 @@ export function MultiLaneLiveDashboard({ session, onComplete }: MultiLaneLiveDas
         currentScreenshot: null,
         status: 'running',
         currentStep: 0,
-        latestAction: 'Initializing...',
+        latestAction: 'Initializing…',
         history: [],
       };
     });
@@ -59,6 +62,7 @@ export function MultiLaneLiveDashboard({ session, onComplete }: MultiLaneLiveDas
   // Auto-scroll refs per persona
   const feedRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const allHistoryRef = useRef<HistoryItem[]>([]);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const latestComparisonRef = useRef<any>(null);
 
   useEffect(() => {
@@ -76,7 +80,11 @@ export function MultiLaneLiveDashboard({ session, onComplete }: MultiLaneLiveDas
         if (data.phase === 'baseline' || (typeof data.thought === 'string' && data.thought.includes('Baseline'))) {
           setIsBaseline(true);
           if (data.thought) setBaselineThought(data.thought);
-        } else if (data.step || (typeof data.thought === 'string' && (data.thought.includes('Starting persona') || data.thought.includes('Initializing agent')))) {
+        } else if (
+          data.step ||
+          (typeof data.thought === 'string' &&
+            (data.thought.includes('Starting persona') || data.thought.includes('Initializing agent')))
+        ) {
           setIsBaseline(false);
         }
 
@@ -108,7 +116,10 @@ export function MultiLaneLiveDashboard({ session, onComplete }: MultiLaneLiveDas
             let updatedStatus = lane.status;
             if (data.persona_done || data.outcome === 'completed') {
               updatedStatus = 'completed';
-            } else if (data.outcome && ['abandoned', 'gave_up', 'error', 'timeout', 'system_error'].includes(data.outcome)) {
+            } else if (
+              data.outcome &&
+              ['abandoned', 'gave_up', 'error', 'timeout', 'system_error'].includes(data.outcome)
+            ) {
               updatedStatus = data.outcome;
             }
 
@@ -191,76 +202,77 @@ export function MultiLaneLiveDashboard({ session, onComplete }: MultiLaneLiveDas
       : 'grid-cols-1 md:grid-cols-2 xl:grid-cols-4';
 
   return (
-    <div className="h-screen w-screen flex flex-col bg-bg-dark overflow-hidden text-white">
-      {/* Top Header Bar */}
-      <header className="h-14 border-b border-gray-800 flex items-center justify-between px-6 bg-bg-card shrink-0 shadow-md">
-        <div className="flex items-center gap-4 text-sm overflow-x-auto py-1">
-          {isBaseline ? (
-            <div className="flex items-center gap-2 text-amber-400 shrink-0">
-              <Activity className="w-4 h-4 animate-spin" />
-              <span className="font-bold tracking-wide">CALIBRATING BASELINE</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 text-gremlin-green shrink-0">
-              <Activity className="w-4 h-4 animate-pulse" />
-              <span className="font-bold tracking-wide">COMPARE MODE ATTACK</span>
-            </div>
-          )}
+    <div className="h-screen w-screen flex flex-col bg-canvas text-ink overflow-hidden antialiased">
+      {/* Universal Top Header Bar (Only ONE mascot on the screen) */}
+      <header className="h-16 border-b border-stone bg-surface px-6 flex items-center justify-between shrink-0 shadow-subtle gap-4 z-20">
+        <div className="flex items-center gap-3 min-w-0">
+          <Badge variant={isBaseline ? 'medium' : 'running'}>
+            {isBaseline ? 'Baseline Calibration' : `Compare Mode (${personas.length} Lanes)`}
+          </Badge>
 
-          <div className="h-4 w-px bg-gray-700 shrink-0" />
-          <div className="text-gray-400 text-xs shrink-0">
-            Target: <span className="text-white font-mono font-medium">{session.url}</span>
+          <div className="h-4 w-px bg-stone hidden sm:block" />
+
+          <div className="text-xs text-muted truncate max-w-xs md:max-w-md hidden sm:block">
+            Target: <span className="font-mono text-ink font-semibold">{session.url}</span>
           </div>
 
-          <div className="h-4 w-px bg-gray-700 shrink-0" />
-          <div className="text-gray-400 text-xs truncate max-w-xs shrink-0">
-            Task: <span className="text-white font-medium">{session.task}</span>
-          </div>
+          <div className="h-4 w-px bg-stone hidden lg:block" />
 
-          <div className="h-4 w-px bg-gray-700 shrink-0" />
-          <div className="flex items-center gap-1.5 shrink-0">
-            <span className="text-xs text-gray-400">Lanes ({personas.length}):</span>
+          <div className="hidden lg:flex items-center gap-1.5 shrink-0">
             {personas.map((p) => {
               const lane = lanes[p];
               const isDone = lane?.status === 'completed';
               return (
                 <span
                   key={p}
-                  className={`text-[11px] font-mono font-bold px-2 py-0.5 rounded border flex items-center gap-1 ${
+                  className={`text-[11px] font-mono font-semibold px-2 py-0.5 rounded-lg border flex items-center gap-1 ${
                     isDone
-                      ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-400'
-                      : 'bg-gremlin-purple/20 border-gremlin-purple/40 text-purple-200'
+                      ? 'bg-severity-low-bg border-severity-low-fg/30 text-severity-low-fg'
+                      : 'bg-gremlin/20 border-gremlin/40 text-ink'
                   }`}
                 >
                   <span>{PERSONA_LABELS[p]?.icon || '👤'}</span>
-                  <span className="hidden sm:inline">{PERSONA_LABELS[p]?.label?.split(' ')[0] || p}</span>
-                  {lane?.currentStep > 0 && <span className="text-gray-400 font-normal">#{lane.currentStep}</span>}
+                  <span className="hidden xl:inline">{PERSONA_LABELS[p]?.label}</span>
+                  {lane?.currentStep > 0 && <span className="text-muted">#{lane.currentStep}</span>}
                 </span>
               );
             })}
           </div>
         </div>
 
-        <button
+        {/* Center: ONE mascot for multi-lane */}
+        <div className="hidden md:flex items-center gap-2">
+          <Gremlin pose="investigating" size="sm" animate={true} />
+          <GremlinSpeech position="right" className="text-xs py-1 px-3">
+            <span className="font-mono text-[11px] text-muted">
+              Monitoring {personas.length} parallel browsers
+            </span>
+          </GremlinSpeech>
+        </div>
+
+        {/* Right: Abort Button */}
+        <Button
+          variant="destructive"
+          size="sm"
           onClick={() => onComplete(allHistoryRef.current, latestComparisonRef.current)}
-          className="px-3.5 py-1.5 bg-red-950/60 hover:bg-red-900 text-red-300 text-xs font-bold rounded-lg uppercase tracking-wider transition-all border border-red-800/60 shrink-0 ml-4 hover:shadow-[0_0_15px_rgba(239,68,68,0.3)]"
+          leftIcon={<StopCircle className="w-4 h-4" />}
         >
           Abort All
-        </button>
+        </Button>
       </header>
 
       {/* Baseline status banner if calibrating */}
       {isBaseline && (
-        <div className="bg-amber-950/40 border-b border-amber-500/30 px-6 py-2 flex items-center gap-2 text-xs text-amber-300">
+        <div className="bg-severity-medium-bg border-b border-severity-medium-fg/20 px-6 py-2 flex items-center gap-2 text-xs text-severity-medium-fg">
           <ShieldAlert className="w-4 h-4 animate-pulse shrink-0" />
           <span className="font-semibold uppercase tracking-wider">Baseline Calibration:</span>
-          <span className="text-amber-200/90 truncate">{baselineThought || 'Calibrating optimal path...'}</span>
+          <span className="truncate">{baselineThought || 'Calibrating optimal path…'}</span>
         </div>
       )}
 
       {/* Main Multi-lane Live View Area */}
-      <main className="flex-1 p-4 overflow-y-auto bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-gray-900 via-bg-dark to-black">
-        <div className={`grid ${gridColsClass} gap-4 h-full min-h-[500px]`}>
+      <main className="flex-1 p-4 md:p-6 overflow-y-auto bg-canvas">
+        <div className={`grid ${gridColsClass} gap-6 h-full min-h-[520px]`}>
           {personas.map((pId) => {
             const lane = lanes[pId] || {
               personaId: pId,
@@ -273,110 +285,113 @@ export function MultiLaneLiveDashboard({ session, onComplete }: MultiLaneLiveDas
             };
             const meta = PERSONA_LABELS[pId] || { label: pId, icon: '👤' };
 
+            const isDone = lane.status === 'completed';
+            const isAbandoned = lane.status === 'abandoned' || lane.status === 'gave_up';
+            const isError = lane.status === 'error';
+            const isTimeout = lane.status === 'timeout' || lane.status === 'system_error';
+
             return (
               <div
                 key={pId}
-                className="flex flex-col bg-bg-card/80 border border-gray-800 hover:border-gremlin-purple/40 rounded-xl overflow-hidden shadow-xl transition-all duration-300"
+                className="flex flex-col bg-surface border border-stone rounded-2xl shadow-card overflow-hidden hover:border-gremlin/50 transition-all duration-200"
               >
                 {/* Lane Header */}
-                <div className="h-12 border-b border-gray-800/80 px-4 flex items-center justify-between bg-black/40">
+                <div className="h-12 border-b border-stone px-4 flex items-center justify-between bg-canvas/40 shrink-0">
                   <div className="flex items-center gap-2 truncate">
-                    <span className="text-lg">{meta.icon}</span>
-                    <span className="font-bold text-sm text-white truncate">{meta.label}</span>
+                    <span className="text-base shrink-0">{meta.icon}</span>
+                    <span className="font-bold text-xs text-ink truncate">{meta.label}</span>
                   </div>
 
                   <div className="flex items-center gap-2">
-                    {lane.status === 'completed' ? (
-                      <span className="text-[10px] uppercase font-bold font-mono px-2 py-0.5 rounded bg-emerald-950 border border-emerald-500/50 text-emerald-400 flex items-center gap-1">
-                        <CheckCircle2 className="w-3 h-3" /> Done
-                      </span>
-                    ) : lane.status === 'abandoned' || lane.status === 'gave_up' ? (
-                      <span className="text-[10px] uppercase font-bold font-mono px-2 py-0.5 rounded bg-rose-950 border border-rose-500/50 text-rose-400">
-                        {lane.status}
-                      </span>
-                    ) : lane.status === 'timeout' || lane.status === 'system_error' ? (
-                      <span className="text-[10px] uppercase font-bold font-mono px-2 py-0.5 rounded bg-amber-950 border border-amber-500/50 text-amber-400">
-                        {lane.status === 'timeout' ? 'timeout' : 'interrupted'}
-                      </span>
-                    ) : lane.status === 'error' ? (
-                      <span className="text-[10px] uppercase font-bold font-mono px-2 py-0.5 rounded bg-rose-950 border border-rose-500/50 text-rose-400">
-                        error
-                      </span>
+                    {isDone ? (
+                      <Badge variant="completed">Done</Badge>
+                    ) : isAbandoned ? (
+                      <Badge variant="abandoned">{lane.status}</Badge>
+                    ) : isTimeout ? (
+                      <Badge variant="medium">{lane.status}</Badge>
+                    ) : isError ? (
+                      <Badge variant="critical">Error</Badge>
                     ) : (
-                      <span className="text-[10px] uppercase font-bold font-mono px-2 py-0.5 rounded bg-gremlin-purple/20 border border-gremlin-purple/40 text-gremlin-green flex items-center gap-1.5">
-                        <span className="w-1.5 h-1.5 rounded-full bg-gremlin-green animate-ping" />
-                        Running
-                      </span>
+                      <Badge variant="running">Running</Badge>
                     )}
 
-                    <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-gray-900 border border-gray-700 text-gray-300">
+                    <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-surface border border-stone text-muted">
                       Step {lane.currentStep}
                     </span>
                   </div>
                 </div>
 
                 {/* Compact Live Browser View (Top Half of Lane) */}
-                <div className="relative aspect-video bg-black flex items-center justify-center overflow-hidden border-b border-gray-800 group">
-                  {/* CRT scanline effect */}
-                  <div className="absolute inset-0 bg-[linear-gradient(rgba(18,16,16,0)_50%,rgba(0,0,0,0.25)_50%),linear-gradient(90deg,rgba(255,0,0,0.06),rgba(0,255,0,0.02),rgba(0,0,255,0.06))] bg-[length:100%_4px,3px_100%] z-10 pointer-events-none opacity-25" />
-
+                <div className="relative aspect-video bg-canvas/40 flex items-center justify-center overflow-hidden border-b border-stone group">
                   {lane.currentScreenshot ? (
                     <>
                       <img
                         src={`data:image/jpeg;base64,${lane.currentScreenshot}`}
                         alt={`${meta.label} live view`}
-                        className="w-full h-full object-contain relative z-0 transition-transform duration-300 group-hover:scale-[1.02]"
+                        className="w-full h-full object-contain relative z-0 transition-transform duration-200 group-hover:scale-[1.01]"
                       />
                       <button
+                        type="button"
                         onClick={() =>
                           setExpandedScreenshot({
                             src: `data:image/jpeg;base64,${lane.currentScreenshot}`,
                             persona: meta.label,
                           })
                         }
-                        className="absolute bottom-2 right-2 p-1.5 rounded-lg bg-black/70 hover:bg-black text-gray-300 hover:text-white border border-gray-700 opacity-0 group-hover:opacity-100 transition-opacity z-20"
-                        title="Expand View"
+                        className="absolute bottom-2 right-2 p-1.5 rounded-lg bg-surface/90 hover:bg-surface text-ink border border-stone opacity-0 group-hover:opacity-100 transition-opacity shadow-subtle cursor-pointer z-20"
+                        title="Expand Viewport"
                       >
-                        <Maximize2 className="w-3.5 h-3.5" />
+                        <Maximize2 className="w-3.5 h-3.5 text-ink" />
                       </button>
                     </>
                   ) : (
-                    <div className="text-gray-500 text-xs font-mono flex flex-col items-center gap-2 p-4 text-center">
-                      <MonitorPlay className="w-6 h-6 text-gremlin-purple animate-pulse" />
-                      <span>Initializing browser context...</span>
+                    <div className="text-muted text-xs font-mono flex flex-col items-center gap-2 p-4 text-center">
+                      <Monitor className="w-6 h-6 text-gremlin-dark animate-pulse" />
+                      <span>Initializing browser context…</span>
                     </div>
                   )}
                 </div>
 
                 {/* Agent Brain Feed (Bottom Half of Lane) */}
-                <div className="flex-1 flex flex-col min-h-[170px] max-h-[220px] bg-black/60 p-3">
-                  <div className="flex items-center gap-1.5 mb-2 text-[11px] uppercase tracking-wider text-gremlin-purple font-semibold">
-                    <Terminal className="w-3.5 h-3.5" />
-                    <span>Agent Brain Feed</span>
+                <div className="flex-1 flex flex-col min-h-[160px] max-h-[220px] bg-surface p-3">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[11px] font-semibold text-muted uppercase tracking-wider">
+                      Brain Stream
+                    </span>
+                    {lane.latestAction && (
+                      <span className="text-[10px] font-mono text-muted truncate max-w-[180px]">
+                        {lane.latestAction}
+                      </span>
+                    )}
                   </div>
 
                   <div
                     ref={(el) => {
                       feedRefs.current[pId] = el;
                     }}
-                    className="flex-1 overflow-y-auto space-y-2 pr-1 font-mono text-[11px] text-gray-300 leading-tight scrollbar-thin scrollbar-thumb-gray-800"
+                    className="flex-1 overflow-y-auto space-y-1.5 pr-1 font-mono text-[11px] text-ink leading-relaxed"
                   >
                     {lane.thoughts.length === 0 ? (
-                      <div className="text-gray-600 italic">Waiting for persona decisions...</div>
+                      <div className="text-muted italic text-[11px]">
+                        Waiting for persona decisions…
+                      </div>
                     ) : (
                       lane.thoughts.map((th, idx) => {
                         const isDecided = th.includes('Decided:');
-                        const isFriction = th.includes('Friction') || th.includes('RAGE') || th.includes('Warning');
+                        const isFriction =
+                          th.toLowerCase().includes('friction') ||
+                          th.toLowerCase().includes('rage') ||
+                          th.toLowerCase().includes('warning');
 
                         return (
                           <div
                             key={idx}
-                            className={`p-1 rounded ${
+                            className={`p-1.5 rounded-lg text-[11px] ${
                               isFriction
-                                ? 'bg-amber-950/40 text-amber-300 border border-amber-500/20'
+                                ? 'bg-severity-medium-bg text-severity-medium-fg border border-severity-medium-fg/20'
                                 : isDecided
-                                ? 'text-gremlin-green font-medium'
-                                : 'text-gray-300'
+                                ? 'bg-gremlin/15 text-ink font-semibold'
+                                : 'text-muted'
                             }`}
                           >
                             {th}
@@ -385,14 +400,6 @@ export function MultiLaneLiveDashboard({ session, onComplete }: MultiLaneLiveDas
                       })
                     )}
                   </div>
-
-                  {/* Lane Footer */}
-                  {lane.latestAction && (
-                    <div className="mt-2 pt-2 border-t border-gray-800 flex items-center justify-between text-[10px] text-gray-400">
-                      <span className="truncate">Action: {lane.latestAction}</span>
-                      <span className="font-mono text-gremlin-purple shrink-0">#{lane.currentStep}</span>
-                    </div>
-                  )}
                 </div>
               </div>
             );
@@ -403,24 +410,31 @@ export function MultiLaneLiveDashboard({ session, onComplete }: MultiLaneLiveDas
       {/* Expanded Screenshot Modal */}
       {expandedScreenshot && (
         <div
-          className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-center p-6 backdrop-blur-sm"
+          className="fixed inset-0 z-50 bg-ink/60 flex flex-col items-center justify-center p-6 backdrop-blur-sm"
           onClick={() => setExpandedScreenshot(null)}
         >
           <div
-            className="relative max-w-5xl max-h-[90vh] bg-bg-card border border-gremlin-purple/50 rounded-2xl overflow-hidden shadow-2xl flex flex-col"
+            className="relative max-w-5xl max-h-[90vh] bg-surface border border-stone rounded-2xl overflow-hidden shadow-popover flex flex-col"
             onClick={(e) => e.stopPropagation()}
           >
-            <div className="h-12 border-b border-gray-800 px-4 flex items-center justify-between bg-black/60">
-              <span className="font-bold text-sm text-white">{expandedScreenshot.persona} - Live Screenshot</span>
+            <div className="h-12 border-b border-stone px-4 flex items-center justify-between bg-canvas/40">
+              <span className="font-bold text-xs text-ink">
+                {expandedScreenshot.persona} — Viewport Capture
+              </span>
               <button
+                type="button"
                 onClick={() => setExpandedScreenshot(null)}
-                className="p-1 rounded-lg hover:bg-gray-800 text-gray-400 hover:text-white transition-colors"
+                className="p-1 rounded-lg hover:bg-stone/30 text-muted hover:text-ink transition cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="p-2 overflow-auto max-h-[calc(90vh-3rem)]">
-              <img src={expandedScreenshot.src} alt="Expanded Screenshot" className="w-full h-auto object-contain rounded-lg" />
+            <div className="p-3 overflow-auto max-h-[calc(90vh-3rem)] bg-canvas/30">
+              <img
+                src={expandedScreenshot.src}
+                alt="Expanded Screenshot"
+                className="w-full h-auto object-contain rounded-xl border border-stone shadow-card"
+              />
             </div>
           </div>
         </div>

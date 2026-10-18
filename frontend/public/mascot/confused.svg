@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" fill="none">
+  <!-- Floppy ear on left, perked ear on right -->
+  <path d="M40 64 C28 58 18 72 26 84 C32 88 38 82 42 76 Z" fill="#6DBA3A" stroke="#263526" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M122 46 C136 24 144 32 134 56 C128 64 122 64 118 60 Z" fill="#6DBA3A" stroke="#263526" stroke-width="4" stroke-linejoin="round"/>
+  <!-- Tilted Head -->
+  <g transform="rotate(-6 80 90)">
+    <ellipse cx="80" cy="88" rx="52" ry="46" fill="#A8DF72" stroke="#263526" stroke-width="4.5"/>
+    <!-- Confused / Swirly Eyes -->
+    <!-- Left spiral -->
+    <path d="M54 82 A 7 7 0 0 1 66 82 A 5 5 0 0 1 58 82 A 3 3 0 0 1 62 82" stroke="#263526" stroke-width="3.5" stroke-linecap="round" fill="none"/>
+    <!-- Right pupil looking up sideways -->
+    <ellipse cx="100" cy="78" rx="10" ry="12" fill="#263526"/>
+    <circle cx="97" cy="74" r="3.5" fill="#FFFFFF"/>
+    <!-- Wavy puzzled mouth -->
+    <path d="M68 106 Q76 112 84 104 Q90 100 96 108" stroke="#263526" stroke-width="4" stroke-linecap="round" fill="none"/>
+    <!-- Asymmetric eyebrows -->
+    <path d="M48 68 Q58 74 66 72" stroke="#263526" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M92 64 Q100 58 110 65" stroke="#263526" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+  <!-- Question mark floating in lilac -->
+  <g transform="translate(116, 24)">
+    <circle cx="16" cy="16" r="14" fill="#E9E4FF" stroke="#4B3FA0" stroke-width="2.5"/>
+    <text x="16" y="22" font-family="'Plus Jakarta Sans', sans-serif" font-size="18" font-weight="bold" fill="#4B3FA0" text-anchor="middle">?</text>
+  </g>
+</svg>

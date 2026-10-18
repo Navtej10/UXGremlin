@@ -3,7 +3,9 @@ import { Launchpad } from './components/Launchpad';
 import { LiveDashboard } from './components/LiveDashboard';
 import { MultiLaneLiveDashboard } from './components/MultiLaneLiveDashboard';
 import { Report, type HistoryItem, type SabotageReport } from './components/Report';
-import { AlertTriangle, RefreshCcw } from 'lucide-react';
+import { Gremlin } from './components/mascot/Gremlin';
+import { Button, Card, Skeleton } from './components/ui';
+import { Zap } from 'lucide-react';
 
 export interface SessionInfo {
   session_id?: string;
@@ -133,47 +135,68 @@ function App() {
 
   const isCompareMode = Boolean(session?.personas && session.personas.length > 1);
 
+  // Supplementary State: Loading
   if (isLoadingReport) {
     return (
-      <div className="h-screen w-screen bg-bg-dark text-white flex flex-col items-center justify-center gap-4">
-        <div className="w-12 h-12 rounded-full border-4 border-gremlin-purple border-t-transparent animate-spin" />
-        <div className="text-center">
-          <h2 className="text-lg font-bold uppercase tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-gremlin-purple to-gremlin-green">
-            Loading Usability Report
-          </h2>
-          <p className="text-xs text-gray-400 mt-1">
-            Retrieving persisted session from SQLite archive…
-          </p>
+      <div className="h-screen w-screen bg-canvas text-ink flex flex-col items-center justify-center p-6 antialiased">
+        <div className="flex flex-col items-center gap-4 max-w-sm text-center">
+          <Gremlin pose="investigating" size="lg" animate={true} />
+          <div>
+            <h2 className="text-base font-bold text-ink tracking-tight">
+              Digging through the archives…
+            </h2>
+            <p className="text-xs text-muted mt-1 leading-relaxed">
+              Retrieving persisted usability session from the SQLite archive.
+            </p>
+          </div>
+
+          {/* Skeleton Hint of Report Layout */}
+          <div className="w-full mt-4 p-4 bg-surface border border-stone rounded-2xl shadow-subtle space-y-3">
+            <div className="flex items-center justify-between">
+              <Skeleton className="h-4 w-32 rounded-lg" />
+              <Skeleton className="h-4 w-16 rounded-lg" />
+            </div>
+            <Skeleton className="h-14 w-full rounded-xl" />
+            <div className="grid grid-cols-2 gap-2">
+              <Skeleton className="h-8 w-full rounded-lg" />
+              <Skeleton className="h-8 w-full rounded-lg" />
+            </div>
+          </div>
         </div>
       </div>
     );
   }
 
+  // Supplementary State: 404 Report Not Found
   if (loadError) {
     return (
-      <div className="h-screen w-screen bg-bg-dark text-white flex flex-col items-center justify-center p-6">
-        <div className="max-w-md w-full bg-black/60 border border-red-500/40 rounded-xl p-8 flex flex-col items-center text-center shadow-2xl">
-          <div className="w-12 h-12 rounded-full bg-red-950/60 border border-red-500/50 flex items-center justify-center mb-4 text-red-400">
-            <AlertTriangle className="w-6 h-6" />
+      <div className="h-screen w-screen bg-canvas text-ink flex flex-col items-center justify-center p-6 antialiased">
+        <Card className="max-w-md w-full p-8 flex flex-col items-center text-center shadow-card">
+          <div className="mb-4">
+            <Gremlin pose="confused" size="lg" animate={true} />
           </div>
-          <h2 className="text-lg font-bold text-white mb-2">Report Not Found</h2>
-          <p className="text-xs text-gray-400 mb-6 leading-relaxed">
-            {loadError}. The report may not exist or has expired.
+          <h2 className="text-lg font-extrabold text-ink mb-1.5">
+            We couldn't find that report
+          </h2>
+          <p className="text-xs text-muted mb-6 leading-relaxed">
+            {loadError}. The report link may be invalid, expired, or removed from the archive.
           </p>
-          <button
+          <Button
+            variant="primary"
+            size="md"
             onClick={handleRestart}
-            className="flex items-center gap-2 px-5 py-2.5 bg-gremlin-purple hover:bg-purple-600 text-white text-xs font-bold rounded-lg transition-all cursor-pointer shadow-lg"
+            leftIcon={<Zap className="w-4 h-4 text-ink fill-ink" />}
+            className="w-full"
           >
-            <RefreshCcw className="w-4 h-4" />
-            <span>Launch New Attack</span>
-          </button>
-        </div>
+            Start a new attack
+          </Button>
+        </Card>
       </div>
     );
   }
 
   return (
-    <div className="antialiased">
+    <div className="antialiased bg-canvas min-h-screen text-ink">
       {!session ? (
         <Launchpad
           onLaunch={(s) => {

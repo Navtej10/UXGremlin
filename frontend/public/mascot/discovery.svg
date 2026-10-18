@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" fill="none">
+  <!-- Discovery Eureka Glow / Sparks -->
+  <path d="M80 14 L80 26 M50 24 L58 34 M110 24 L102 34 M26 48 L38 52 M134 48 L122 52" stroke="#6DBA3A" stroke-width="3.5" stroke-linecap="round"/>
+  <!-- Lightbulb / Spark in lilac -->
+  <circle cx="80" cy="28" r="8" fill="#E9E4FF" stroke="#4B3FA0" stroke-width="2.5"/>
+  <path d="M77 36 L83 36" stroke="#4B3FA0" stroke-width="2.5" stroke-linecap="round"/>
+  <!-- Ears / Horns perked high -->
+  <path d="M34 46 C20 26 14 34 26 58 C32 64 38 64 42 60 Z" fill="#6DBA3A" stroke="#263526" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M126 46 C140 26 146 34 134 58 C128 64 122 64 118 60 Z" fill="#6DBA3A" stroke="#263526" stroke-width="4" stroke-linejoin="round"/>
+  <!-- Head -->
+  <ellipse cx="80" cy="88" rx="52" ry="46" fill="#A8DF72" stroke="#263526" stroke-width="4.5"/>
+  <!-- Raised wide discovery eyes -->
+  <ellipse cx="58" cy="80" rx="11" ry="13" fill="#263526"/>
+  <ellipse cx="102" cy="80" rx="11" ry="13" fill="#263526"/>
+  <circle cx="61" cy="76" r="4.5" fill="#FFFFFF"/>
+  <circle cx="105" cy="76" r="4.5" fill="#FFFFFF"/>
+  <circle cx="56" cy="84" r="2" fill="#FFFFFF"/>
+  <circle cx="100" cy="84" r="2" fill="#FFFFFF"/>
+  <!-- Surprised open mouth / grin -->
+  <ellipse cx="80" cy="106" rx="9" ry="11" fill="#263526"/>
+  <path d="M74 112 Q80 115 86 112" stroke="#A8DF72" stroke-width="2.5" stroke-linecap="round"/>
+  <!-- Hands pointing up excitedly -->
+  <ellipse cx="36" cy="116" rx="8" ry="12" fill="#6DBA3A" stroke="#263526" stroke-width="3.5" transform="rotate(-20 36 116)"/>
+  <ellipse cx="124" cy="116" rx="8" ry="12" fill="#6DBA3A" stroke="#263526" stroke-width="3.5" transform="rotate(20 124 116)"/>
+</svg>

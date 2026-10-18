@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" fill="none">
+  <!-- Ears / Horns -->
+  <path d="M38 52 C26 30 18 36 28 62 C34 68 40 68 44 64 Z" fill="#6DBA3A" stroke="#263526" stroke-width="4" stroke-linejoin="round"/>
+  <path d="M122 52 C134 30 142 36 132 62 C126 68 120 68 116 64 Z" fill="#6DBA3A" stroke="#263526" stroke-width="4" stroke-linejoin="round"/>
+  <!-- Head -->
+  <ellipse cx="80" cy="86" rx="52" ry="46" fill="#A8DF72" stroke="#263526" stroke-width="4.5"/>
+  <!-- Cheek blush / tone -->
+  <ellipse cx="50" cy="98" rx="8" ry="5" fill="#6DBA3A" opacity="0.35"/>
+  <ellipse cx="110" cy="98" rx="8" ry="5" fill="#6DBA3A" opacity="0.35"/>
+  <!-- Eyes -->
+  <ellipse cx="60" cy="80" rx="9" ry="11" fill="#263526"/>
+  <ellipse cx="100" cy="80" rx="9" ry="11" fill="#263526"/>
+  <circle cx="63" cy="77" r="3.5" fill="#FFFFFF"/>
+  <circle cx="103" cy="77" r="3.5" fill="#FFFFFF"/>
+  <circle cx="58" cy="84" r="1.5" fill="#FFFFFF"/>
+  <circle cx="98" cy="84" r="1.5" fill="#FFFFFF"/>
+  <!-- Smirk / Mouth -->
+  <path d="M72 98 Q80 106 90 98 Q92 97 94 99 Q90 110 74 104 Z" fill="#263526"/>
+  <!-- Laptop base in front -->
+  <rect x="52" y="118" width="56" height="20" rx="3" fill="#EDE9DF" stroke="#263526" stroke-width="3.5"/>
+  <path d="M44 138 L116 138 L110 144 L50 144 Z" fill="#EDE9DF" stroke="#263526" stroke-width="3.5" stroke-linejoin="round"/>
+  <!-- Small glowing gremlin icon on laptop -->
+  <circle cx="80" cy="128" r="4.5" fill="#A8DF72"/>
+</svg>

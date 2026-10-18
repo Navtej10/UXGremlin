@@ -1,4 +1,5 @@
-import { ShieldAlert, CheckCircle2, XCircle, AlertTriangle, ArrowRight, BarChart3 } from 'lucide-react';
+import { ShieldAlert, ArrowRight, BarChart3 } from 'lucide-react';
+import { Badge, Button, Card } from './ui';
 
 export interface ComparisonItem {
   persona: string;
@@ -19,63 +20,24 @@ interface ComparisonSummaryProps {
 }
 
 const PERSONA_DETAILS: Record<string, { name: string; icon: string }> = {
-  pro_tester: { name: 'Professional UX Tester', icon: '🎯' },
+  pro_tester: { name: 'Pro Tester', icon: '🎯' },
   impatient: { name: 'Impatient User', icon: '😈' },
   confused: { name: 'Confused User', icon: '😵‍💫' },
   skeptic: { name: 'Skeptical User', icon: '🧐' },
   mobile: { name: 'Mobile User', icon: '📱' },
 };
 
-const OUTCOME_STYLES: Record<string, { label: string; bg: string; text: string; border: string }> = {
-  completed: {
-    label: 'Completed',
-    bg: 'bg-emerald-950/70',
-    text: 'text-emerald-400',
-    border: 'border-emerald-500/40',
-  },
-  abandoned: {
-    label: 'Abandoned',
-    bg: 'bg-amber-950/70',
-    text: 'text-amber-400',
-    border: 'border-amber-500/40',
-  },
-  gave_up: {
-    label: 'Gave Up',
-    bg: 'bg-rose-950/70',
-    text: 'text-rose-400',
-    border: 'border-rose-500/40',
-  },
-  max_steps_reached: {
-    label: 'Max Steps',
-    bg: 'bg-amber-950/70',
-    text: 'text-amber-400',
-    border: 'border-amber-500/40',
-  },
-  error: {
-    label: 'Error',
-    bg: 'bg-rose-950/70',
-    text: 'text-rose-400',
-    border: 'border-rose-500/40',
-  },
-  timeout: {
-    label: 'Timeout',
-    bg: 'bg-amber-950/70',
-    text: 'text-amber-400',
-    border: 'border-amber-500/40',
-  },
-  system_error: {
-    label: 'Interrupted',
-    bg: 'bg-amber-950/70',
-    text: 'text-amber-400',
-    border: 'border-amber-500/40',
-  },
-};
+function getScoreTextColor(score: number): string {
+  if (score <= 20) return 'text-severity-low-fg';
+  if (score <= 45) return 'text-severity-medium-fg';
+  if (score <= 70) return 'text-severity-critical-fg';
+  return 'text-severity-critical-fg';
+}
 
-function getScoreColor(score: number): { text: string; bg: string; border: string } {
-  if (score <= 20) return { text: 'text-gremlin-green', bg: 'bg-emerald-500', border: 'border-emerald-500/40' };
-  if (score <= 45) return { text: 'text-amber-400', bg: 'bg-amber-400', border: 'border-amber-500/40' };
-  if (score <= 70) return { text: 'text-orange-400', bg: 'bg-orange-500', border: 'border-orange-500/40' };
-  return { text: 'text-rose-500', bg: 'bg-rose-500', border: 'border-rose-500/40' };
+function getScoreBarBg(score: number): string {
+  if (score <= 20) return 'bg-severity-low-fg';
+  if (score <= 45) return 'bg-severity-medium-fg';
+  return 'bg-severity-critical-fg';
 }
 
 export function ComparisonSummary({
@@ -109,46 +71,46 @@ export function ComparisonSummary({
   const avgScore = Math.round(items.reduce((acc, curr) => acc + curr.score, 0) / items.length);
 
   return (
-    <div className="w-full bg-bg-card/90 border border-gremlin-purple/30 rounded-2xl p-6 shadow-[0_0_30px_rgba(157,0,255,0.12)] mb-6 transition-all">
+    <Card className="p-6 mb-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-gray-800">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-stone">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gremlin-purple/20 border border-gremlin-purple/40 flex items-center justify-center text-gremlin-green">
-            <BarChart3 className="w-5 h-5" />
+          <div className="w-10 h-10 rounded-xl bg-gremlin/20 border border-gremlin/50 flex items-center justify-center text-ink">
+            <BarChart3 className="w-5 h-5 text-gremlin-dark" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-white tracking-tight flex items-center gap-2">
-              Persona Usability Comparison
-              <span className="text-xs font-mono font-normal px-2.5 py-0.5 rounded-full bg-gremlin-purple/20 border border-gremlin-purple/40 text-purple-300">
+            <h2 className="text-base font-bold text-ink tracking-tight flex items-center gap-2">
+              <span>Persona Usability Comparison</span>
+              <span className="text-xs font-mono font-normal px-2.5 py-0.5 rounded-full bg-gremlin/20 border border-gremlin/40 text-ink">
                 {items.length} {items.length === 1 ? 'Persona' : 'Personas'} Tested
               </span>
             </h2>
-            <p className="text-xs text-text-main/70 mt-0.5">
-              Side-by-side friction scores, outcomes, and top vulnerabilities across tested archetypes. Click a persona to inspect details.
+            <p className="text-xs text-muted mt-0.5">
+              Side-by-side friction scores, outcomes, and top vulnerabilities across tested archetypes.
             </p>
           </div>
         </div>
 
         {/* Aggregate KPI chips */}
         <div className="flex items-center gap-2 shrink-0">
-          <div className="px-3 py-1.5 rounded-lg bg-black/40 border border-gray-800 text-right">
-            <span className="text-[10px] uppercase font-bold text-gray-400 block">Avg Friction</span>
-            <span className={`text-sm font-mono font-extrabold ${getScoreColor(avgScore).text}`}>
-              {avgScore} <span className="text-[10px] text-gray-500 font-normal">/ 100</span>
+          <div className="px-3 py-1.5 rounded-xl bg-canvas border border-stone text-right">
+            <span className="text-[10px] uppercase font-bold text-muted block">Avg Friction</span>
+            <span className={`text-sm font-mono font-extrabold ${getScoreTextColor(avgScore)}`}>
+              {avgScore} <span className="text-[10px] text-muted font-normal">/ 100</span>
             </span>
           </div>
           {lowestFriction && (
-            <div className="px-3 py-1.5 rounded-lg bg-emerald-950/30 border border-emerald-500/30 text-right">
-              <span className="text-[10px] uppercase font-bold text-emerald-400 block">Best UX</span>
-              <span className="text-xs font-semibold text-white">
+            <div className="px-3 py-1.5 rounded-xl bg-severity-low-bg border border-severity-low-fg/30 text-right">
+              <span className="text-[10px] uppercase font-bold text-severity-low-fg block">Best UX</span>
+              <span className="text-xs font-semibold text-ink">
                 {PERSONA_DETAILS[lowestFriction.persona]?.icon || '🎯'} {lowestFriction.score}
               </span>
             </div>
           )}
           {highestFriction && highestFriction.persona !== lowestFriction?.persona && (
-            <div className="px-3 py-1.5 rounded-lg bg-rose-950/30 border border-rose-500/30 text-right">
-              <span className="text-[10px] uppercase font-bold text-rose-400 block">Max Friction</span>
-              <span className="text-xs font-semibold text-white">
+            <div className="px-3 py-1.5 rounded-xl bg-severity-critical-bg border border-severity-critical-fg/30 text-right">
+              <span className="text-[10px] uppercase font-bold text-severity-critical-fg block">Max Friction</span>
+              <span className="text-xs font-semibold text-ink">
                 {PERSONA_DETAILS[highestFriction.persona]?.icon || '⚠️'} {highestFriction.score}
               </span>
             </div>
@@ -156,12 +118,12 @@ export function ComparisonSummary({
         </div>
       </div>
 
-      {/* Persona Comparison Bars */}
-      <div className="mt-5 space-y-3.5">
+      {/* Persona Comparison Cards Grid */}
+      <div className="mt-5 grid grid-cols-1 gap-3.5">
         {items.map((item) => {
           const isSelected = selectedPersona === item.persona;
-          const scoreColors = getScoreColor(item.score);
-          const outcomeStyle = OUTCOME_STYLES[item.outcome] || OUTCOME_STYLES.completed;
+          const scoreTextColor = getScoreTextColor(item.score);
+          const scoreBarBg = getScoreBarBg(item.score);
           const details = PERSONA_DETAILS[item.persona] || {
             name: item.persona_label || item.persona,
             icon: '👤',
@@ -171,14 +133,31 @@ export function ComparisonSummary({
             onSelectPersona?.(item.persona);
           };
 
+          const outcomeVariant =
+            item.outcome === 'completed'
+              ? 'completed'
+              : item.outcome === 'error'
+              ? 'critical'
+              : item.outcome === 'abandoned'
+              ? 'abandoned'
+              : 'medium';
+
           return (
             <div
               key={item.persona}
+              role="button"
+              tabIndex={0}
               onClick={handleCardClick}
-              className={`p-4 rounded-xl border transition-all cursor-pointer group ${
+              onKeyDown={(e) => {
+                if (e.key === ' ' || e.key === 'Enter') {
+                  e.preventDefault();
+                  handleCardClick();
+                }
+              }}
+              className={`p-4 rounded-xl border transition-all duration-150 cursor-pointer text-left select-none ${
                 isSelected
-                  ? 'bg-purple-950/30 border-gremlin-purple shadow-[0_0_20px_rgba(157,0,255,0.25)]'
-                  : 'bg-black/40 border-gray-800 hover:border-gray-700 hover:bg-black/60'
+                  ? 'bg-gremlin/10 border-2 border-gremlin shadow-subtle'
+                  : 'bg-surface border-stone hover:border-muted/50 hover:bg-canvas/40'
               }`}
             >
               {/* Row 1: Persona Info & Metrics */}
@@ -189,16 +168,16 @@ export function ComparisonSummary({
                   </span>
                   <div>
                     <div className="flex items-center gap-2">
-                      <span className="font-bold text-white text-sm group-hover:text-gremlin-green transition-colors">
+                      <span className="font-bold text-ink text-sm">
                         {item.persona_label || details.name}
                       </span>
                       {isSelected && (
-                        <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-gremlin-purple/30 text-purple-200 border border-gremlin-purple/50">
+                        <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-gremlin/25 text-ink border border-gremlin font-bold">
                           Active View
                         </span>
                       )}
                     </div>
-                    <span className="text-xs text-gray-500 font-mono">
+                    <span className="text-xs text-muted font-mono">
                       {item.steps} {item.steps === 1 ? 'step' : 'steps'} taken
                     </span>
                   </div>
@@ -206,67 +185,54 @@ export function ComparisonSummary({
 
                 <div className="flex items-center gap-3">
                   {/* Outcome Badge */}
-                  <span
-                    className={`text-xs uppercase font-bold px-2.5 py-1 rounded-md border flex items-center gap-1.5 ${outcomeStyle.bg} ${outcomeStyle.text} ${outcomeStyle.border}`}
-                  >
-                    {item.outcome === 'completed' ? (
-                      <CheckCircle2 className="w-3.5 h-3.5" />
-                    ) : item.outcome === 'error' ? (
-                      <AlertTriangle className="w-3.5 h-3.5" />
-                    ) : (
-                      <XCircle className="w-3.5 h-3.5" />
-                    )}
-                    {outcomeStyle.label}
-                  </span>
+                  <Badge variant={outcomeVariant}>{item.outcome}</Badge>
 
                   {/* Score Pill */}
                   <div className="text-right min-w-[70px]">
-                    <span className={`text-lg font-black font-mono tracking-tight ${scoreColors.text}`}>
+                    <span className={`text-lg font-black font-mono tracking-tight ${scoreTextColor}`}>
                       {item.score}
                     </span>
-                    <span className="text-[11px] text-gray-500 font-normal"> / 100</span>
+                    <span className="text-[11px] text-muted font-normal"> / 100</span>
                   </div>
                 </div>
               </div>
 
               {/* Row 2: Visual Score Bar */}
-              <div className="w-full h-2.5 rounded-full bg-gray-900 border border-gray-800 overflow-hidden relative">
+              <div className="w-full h-2 rounded-full bg-stone overflow-hidden relative">
                 <div
-                  className={`h-full rounded-full transition-all duration-700 ${scoreColors.bg}`}
+                  className={`h-full rounded-full transition-all duration-500 ${scoreBarBg}`}
                   style={{ width: `${Math.max(4, Math.min(100, item.score))}%` }}
                 />
               </div>
 
               {/* Row 3: Top Finding Highlight & Actions */}
-              <div className="mt-3 pt-2.5 border-t border-gray-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-                <div className="flex items-center gap-2 text-gray-300 min-w-0 flex-1">
-                  <ShieldAlert className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                  <span className="text-gray-400 font-medium shrink-0">Top Finding:</span>
-                  <span className="text-text-main truncate italic">{item.top_finding}</span>
+              <div className="mt-3 pt-2.5 border-t border-stone flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-2 text-ink min-w-0 flex-1">
+                  <ShieldAlert className="w-3.5 h-3.5 text-severity-medium-fg shrink-0" />
+                  <span className="text-muted font-medium shrink-0">Top Finding:</span>
+                  <span className="text-ink truncate font-medium">{item.top_finding}</span>
                 </div>
 
                 {onViewRun && (
-                  <div className="flex items-center gap-2 shrink-0">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onSelectPersona?.(item.persona);
-                        onViewRun(item.persona);
-                      }}
-                      className="px-3.5 py-1 rounded-lg bg-gremlin-purple/30 hover:bg-gremlin-purple/50 text-purple-200 hover:text-white font-bold text-[11px] border border-gremlin-purple/50 shadow-sm transition-all cursor-pointer flex items-center gap-1.5"
-                      title="View step-by-step browser run"
-                    >
-                      <span>View Run</span>
-                      <ArrowRight className="w-3 h-3 group-hover:translate-x-0.5 transition-transform text-gremlin-green" />
-                    </button>
-                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelectPersona?.(item.persona);
+                      onViewRun(item.persona);
+                    }}
+                    rightIcon={<ArrowRight className="w-3.5 h-3.5 text-gremlin-dark" />}
+                    className="shrink-0 text-xs font-bold"
+                  >
+                    View Run
+                  </Button>
                 )}
               </div>
             </div>
           );
         })}
       </div>
-    </div>
+    </Card>
   );
 }
