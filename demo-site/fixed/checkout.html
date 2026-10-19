@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Checkout | BetterBrew Coffee</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body class="checkout-page-fixed">
+
+  <!-- Header Navigation -->
+  <header class="site-header">
+    <div class="container nav-container">
+      <a href="index.html" class="brand-logo">
+        <svg class="brand-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M2,21H20V19H2M20,8H18V5H20M20,3H4V13A4,4 0 0,0 8,17H14A4,4 0 0,0 18,13V10H20A2,2 0 0,0 22,8V5C22,3.89 21.1,3 20,3Z"/>
+        </svg>
+        <span>BetterBrew</span>
+      </a>
+      <nav aria-label="Main Navigation">
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="shop.html">Shop</a></li>
+          <li><a href="cart.html">Cart</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main class="section">
+    <div class="container">
+      <h1 style="margin-bottom: 24px;">Checkout</h1>
+
+      <!-- Fix 4: Error Summary Alert Box at Top -->
+      <div id="error-summary" class="error-summary-box" role="alert" tabindex="-1">
+        <h3>There are problems with your submission:</h3>
+        <ul id="error-summary-list" class="error-summary-list">
+          <!-- Populated dynamically via JS -->
+        </ul>
+      </div>
+
+      <div class="checkout-grid">
+        <!-- Form Column (Fix 4: Visible Labels, Required Badges, Hints, Inline Errors) -->
+        <div class="form-card">
+          <h2 style="font-size: 1.4rem; margin-bottom: 20px;">Shipping &amp; Billing Details</h2>
+
+          <form id="checkout-form" novalidate>
+            <!-- Full Name -->
+            <div class="form-group">
+              <label for="cust_name" class="form-label">
+                Full Name <span class="required-badge" aria-hidden="true">*</span>
+                <span class="sr-only">(required)</span>
+              </label>
+              <input type="text" id="cust_name" name="name" class="input-fixed" autocomplete="name" required aria-describedby="cust_name-error">
+              <p class="field-error-message" id="cust_name-error"></p>
+            </div>
+
+            <!-- Email Address -->
+            <div class="form-group">
+              <label for="cust_email" class="form-label">
+                Email Address <span class="required-badge" aria-hidden="true">*</span>
+                <span class="sr-only">(required)</span>
+              </label>
+              <input type="email" id="cust_email" name="email" class="input-fixed" autocomplete="email" placeholder="alex@example.com" required aria-describedby="cust_email-error">
+              <p class="field-error-message" id="cust_email-error"></p>
+            </div>
+
+            <!-- Phone Number (Fix 4: Explicitly marked required with plain language hint) -->
+            <div class="form-group">
+              <label for="cust_phone" class="form-label">
+                Phone Number <span class="required-badge" aria-hidden="true">*</span>
+                <span class="sr-only">(required)</span>
+              </label>
+              <input type="tel" id="cust_phone" name="phone" class="input-fixed" autocomplete="tel" placeholder="(555) 019-2834" required aria-describedby="cust_phone-hint cust_phone-error">
+              <span class="field-hint" id="cust_phone-hint">Enter a phone number so we can text delivery updates.</span>
+              <p class="field-error-message" id="cust_phone-error"></p>
+            </div>
+
+            <!-- Street Address -->
+            <div class="form-group">
+              <label for="cust_address" class="form-label">
+                Street Address <span class="required-badge" aria-hidden="true">*</span>
+                <span class="sr-only">(required)</span>
+              </label>
+              <input type="text" id="cust_address" name="address" class="input-fixed" autocomplete="street-address" placeholder="123 Roast Way, Apt 4" required aria-describedby="cust_address-error">
+              <p class="field-error-message" id="cust_address-error"></p>
+            </div>
+
+            <div class="form-group-row">
+              <div class="form-group">
+                <label for="cust_city" class="form-label">
+                  City <span class="required-badge" aria-hidden="true">*</span>
+                  <span class="sr-only">(required)</span>
+                </label>
+                <input type="text" id="cust_city" name="city" class="input-fixed" autocomplete="address-level2" required aria-describedby="cust_city-error">
+                <p class="field-error-message" id="cust_city-error"></p>
+              </div>
+
+              <div class="form-group">
+                <label for="cust_postal" class="form-label">
+                  Postal Code <span class="required-badge" aria-hidden="true">*</span>
+                  <span class="sr-only">(required)</span>
+                </label>
+                <input type="text" id="cust_postal" name="postal" class="input-fixed" autocomplete="postal-code" required aria-describedby="cust_postal-error">
+                <p class="field-error-message" id="cust_postal-error"></p>
+              </div>
+            </div>
+
+            <!-- Payment Card -->
+            <div class="form-group">
+              <label for="cust_card" class="form-label">
+                Payment Card <span class="required-badge" aria-hidden="true">*</span>
+                <span class="sr-only">(required)</span>
+              </label>
+              <input type="text" id="cust_card" name="card" class="input-fixed" placeholder="Card number (test: 4242...)" required aria-describedby="cust_card-hint cust_card-error">
+              <span class="field-hint" id="cust_card-hint">Simulated sandbox payment: enter any 16-digit card number.</span>
+              <p class="field-error-message" id="cust_card-error"></p>
+            </div>
+
+            <!-- Fix 2 & Fix 5: Honest button label "Place Order" & safe spacing preventing sticky bar overlap -->
+            <div style="margin-top: 28px;">
+              <button type="submit" class="btn btn-primary btn-block btn-large">Place Order</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Order Summary Sidebar -->
+        <div class="cart-summary-box" style="margin-left: 0; max-width: 100%;">
+          <h3 style="font-size: 1.25rem; margin-bottom: 16px;">Order Summary</h3>
+          <div id="checkout-items-list" style="margin-bottom: 16px;">
+            <!-- Rendered via JS -->
+          </div>
+          <div class="summary-row" style="border-top: 1px solid var(--color-border-subtle); padding-top: 12px;">
+            <span>Shipping</span>
+            <span style="color: #03543f; font-weight: 600;">FREE</span>
+          </div>
+          <div class="summary-row total">
+            <span>Total to Charge</span>
+            <span id="checkout-order-total">$0.00</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- Fix 3: Accessible Newsletter Modal -->
+  <div class="modal-overlay-fixed" id="newsletter-modal" role="dialog" aria-modal="true" aria-labelledby="newsletter-modal-title">
+    <div class="modal-content-fixed">
+      <button type="button" class="modal-close-fixed" id="newsletter-modal-close" aria-label="Close newsletter signup offer">&times;</button>
+      <h3 id="newsletter-modal-title">Get 10% Off Your First Order</h3>
+      <p>Sign up for roasting schedules, harvest releases, and exclusive coffee tasting events.</p>
+      <form class="modal-form-fixed" id="newsletter-modal-form">
+        <div>
+          <label for="newsletter-email" class="form-label">Email Address <span class="required-badge">*</span></label>
+          <input type="email" id="newsletter-email" class="input-fixed" placeholder="you@example.com" required>
+        </div>
+        <button type="submit" class="btn btn-primary btn-block">Unlock 10% Off</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div class="footer-col">
+        <h4>BetterBrew Coffee</h4>
+        <p>Specialty micro-batch coffee roasted in Portland, OR.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Navigation</h4>
+        <ul>
+          <li><a href="index.html">Home</a></li>
+          <li><a href="shop.html">Shop Coffees</a></li>
+          <li><a href="cart.html">View Cart</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Customer Care</h4>
+        <ul>
+          <li><a href="#shipping">Shipping &amp; Delivery</a></li>
+          <li><a href="#brewing">Brew Guides</a></li>
+          <li><a href="#contact">Contact Support</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Fix 1: Prominent, high-contrast footer subscribe link -->
+    <div class="footer-subscribe-feature">
+      <div class="container">
+        <span>Never run out of freshly roasted beans: </span>
+        <a href="shop.html#subscription" class="footer-subscribe-link-fixed">Explore Coffee Subscriptions (Save 15%) &rarr;</a>
+      </div>
+    </div>
+
+    <div class="container footer-bottom-copy">
+      <p>&copy; 2026 BetterBrew Coffee Roasters. All rights reserved.</p>
+    </div>
+  </footer>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

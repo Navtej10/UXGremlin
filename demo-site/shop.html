@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shop Fresh Roasts &amp; Subscriptions | BetterBrew Coffee</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+
+  <!-- Header Navigation -->
+  <header class="site-header">
+    <div class="container nav-container">
+      <a href="index.html" class="brand-logo">
+        <svg class="brand-icon" viewBox="0 0 24 24">
+          <path d="M2,21H20V19H2M20,8H18V5H20M20,3H4V13A4,4 0 0,0 8,17H14A4,4 0 0,0 18,13V10H20A2,2 0 0,0 22,8V5C22,3.89 21.1,3 20,3Z"/>
+        </svg>
+        <span>BetterBrew</span>
+      </a>
+      <nav>
+        <ul class="nav-links">
+          <li><a href="index.html">Home</a></li>
+          <li><a href="shop.html" class="active">Shop</a></li>
+          <li><a href="index.html#story">Our Story</a></li>
+          <li>
+            <a href="cart.html" class="nav-cart-link">
+              <svg class="cart-icon" viewBox="0 0 24 24">
+                <path d="M17,18C15.89,18 15,18.89 15,20A2,2 0 0,0 17,22A2,2 0 0,0 19,20C19,18.89 18.1,18 17,18M1,2V4H3L6.6,11.59L5.24,14.04C5.09,14.32 5,14.65 5,15A2,2 0 0,0 7,17H19V15H7.42A0.25,0.25 0 0,1 7.17,14.75C7.17,14.7 7.18,14.66 7.2,14.63L8.1,13H15.55C16.3,13 16.96,12.58 17.3,11.97L20.88,5.5C20.96,5.34 21,5.17 21,5A1,1 0 0,0 20,4H5.21L4.27,2M7,18C5.89,18 5,18.89 5,20A2,2 0 0,0 7,22A2,2 0 0,0 9,20C9,18.89 8.1,18 7,18Z"/>
+              </svg>
+              <span>Cart</span>
+            </a>
+          </li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <!-- Page Header -->
+    <section class="section" style="padding: 40px 0 20px; background-color: var(--color-surface);">
+      <div class="container text-center">
+        <h1>Artisanal Coffee &amp; Roasts</h1>
+        <p>Whole bean, pour-over, and espresso profiles roasted in small batches.</p>
+      </div>
+    </section>
+
+    <!-- Individual Products -->
+    <section class="section" style="padding-top: 24px;">
+      <div class="container">
+        <div class="grid-3">
+          <!-- Item 1 -->
+          <article class="product-card">
+            <div class="product-image-box">
+              <span class="product-badge">Single Origin</span>
+              <svg width="90" height="90" viewBox="0 0 80 80">
+                <rect x="22" y="15" width="36" height="52" rx="4" fill="#6f4e37"/>
+                <rect x="26" y="24" width="28" height="24" rx="2" fill="#faf6f0"/>
+                <line x1="30" y1="30" x2="50" y2="30" stroke="#b85d19" stroke-width="2"/>
+                <line x1="30" y1="36" x2="46" y2="36" stroke="#9e8e83" stroke-width="1.5"/>
+              </svg>
+            </div>
+            <div class="product-content">
+              <span class="product-origin">Ethiopia &bull; Washed</span>
+              <h3 class="product-title">Sun-Dried Jasmine</h3>
+              <p class="product-notes">Candied peach, bergamot tea, and orange blossom floral aroma.</p>
+              <div class="product-footer">
+                <span class="product-price">$19.50</span>
+                <!-- Action button -->
+                <button type="button" class="btn btn-secondary btn-plan-select" data-plan-id="prod-ethiopia" data-plan-title="Sun-Dried Jasmine (12oz)" data-plan-price="19.50">Proceed</button>
+              </div>
+            </div>
+          </article>
+
+          <!-- Item 2 -->
+          <article class="product-card">
+            <div class="product-image-box">
+              <span class="product-badge">Dark Roast</span>
+              <svg width="90" height="90" viewBox="0 0 80 80">
+                <rect x="22" y="15" width="36" height="52" rx="4" fill="#2b1a11"/>
+                <rect x="26" y="24" width="28" height="24" rx="2" fill="#faf6f0"/>
+                <line x1="30" y1="30" x2="50" y2="30" stroke="#b85d19" stroke-width="2"/>
+                <line x1="30" y1="36" x2="46" y2="36" stroke="#9e8e83" stroke-width="1.5"/>
+              </svg>
+            </div>
+            <div class="product-content">
+              <span class="product-origin">Colombia &bull; Huila</span>
+              <h3 class="product-title">Velvet Cacao</h3>
+              <p class="product-notes">Rich bittersweet chocolate, toasted hazelnut, and dark cane syrup.</p>
+              <div class="product-footer">
+                <span class="product-price">$18.00</span>
+                <button type="button" class="btn btn-secondary btn-plan-select" data-plan-id="prod-colombia" data-plan-title="Velvet Cacao (12oz)" data-plan-price="18.00">Proceed</button>
+              </div>
+            </div>
+          </article>
+
+          <!-- Item 3 -->
+          <article class="product-card">
+            <div class="product-image-box">
+              <span class="product-badge">Signature Blend</span>
+              <svg width="90" height="90" viewBox="0 0 80 80">
+                <rect x="22" y="15" width="36" height="52" rx="4" fill="#4d3224"/>
+                <rect x="26" y="24" width="28" height="24" rx="2" fill="#faf6f0"/>
+                <line x1="30" y1="30" x2="50" y2="30" stroke="#b85d19" stroke-width="2"/>
+                <line x1="30" y1="36" x2="46" y2="36" stroke="#9e8e83" stroke-width="1.5"/>
+              </svg>
+            </div>
+            <div class="product-content">
+              <span class="product-origin">House Espresso</span>
+              <h3 class="product-title">Crema Foundry</h3>
+              <p class="product-notes">Dense crema, notes of marzipan, baking spice, and caramelized brown sugar.</p>
+              <div class="product-footer">
+                <span class="product-price">$17.50</span>
+                <button type="button" class="btn btn-secondary btn-plan-select" data-plan-id="prod-espresso" data-plan-title="Crema Foundry Espresso (12oz)" data-plan-price="17.50">Proceed</button>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Subscription Section -->
+    <section class="subscription-section" id="subscription">
+      <div class="container">
+        <div class="section-header text-center">
+          <h2>Coffee Subscriptions</h2>
+          <p>Never run out of freshly roasted beans. Delivered right to your doorstep on your schedule.</p>
+        </div>
+
+        <!-- Pricing container -->
+        <div id="pricing-plans-container" class="plans-container-bad"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Newsletter Modal -->
+  <div class="modal-overlay-bad" id="newsletter-modal">
+    <div class="modal-content-bad">
+      <button type="button" class="modal-close-bad" id="newsletter-modal-close">&#x2715;</button>
+      <h3>Get 10% Off Your First Order</h3>
+      <p>Sign up for roasting schedules, harvest releases, and exclusive coffee tasting events.</p>
+      <form class="modal-form" id="newsletter-modal-form">
+        <input type="text" class="input-bad" placeholder="Your email address">
+        <button type="submit" class="btn btn-primary btn-block">Unlock 10% Off</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Footer -->
+  <footer class="site-footer">
+    <div class="container footer-grid">
+      <div class="footer-col">
+        <h4>BetterBrew Coffee</h4>
+        <p>Specialty micro-batch coffee roasted in Portland, OR. Dedicated to transparent sourcing, terroir-focused roasting, and mindful brewing.</p>
+      </div>
+      <div class="footer-col">
+        <h4>Navigation</h4>
+        <ul>
+          <li><a href="index.html">Home</a></li>
+          <li><a href="shop.html">Shop Coffees</a></li>
+          <li><a href="cart.html">View Cart</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h4>Customer Care</h4>
+        <ul>
+          <li><a href="#shipping">Shipping &amp; Delivery</a></li>
+          <li><a href="#brewing">Brew Guides</a></li>
+          <li><a href="#contact">Contact Support</a></li>
+        </ul>
+      </div>
+    </div>
+
+    <!-- Footer Sub Link -->
+    <div class="footer-faint-bar">
+      <a href="shop.html#subscription" class="faint-subscribe-link">Subscribe</a>
+    </div>
+
+    <div class="container footer-bottom-copy">
+      <p>&copy; 2026 BetterBrew Coffee Roasters. All rights reserved.</p>
+    </div>
+  </footer>
+
+  <!-- Mobile sticky bar -->
+  <div class="mobile-sticky-bar">
+    Free shipping over $30 &bull; Chat with us
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>
