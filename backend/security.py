@@ -1,3 +1,4 @@
+import os
 import ipaddress
 import socket
 import urllib.parse
@@ -10,6 +11,10 @@ from typing import Any
 # ==============================================================================
 # 1. URL & IP Validation Constants and Functions
 # ==============================================================================
+
+# Allow localhost / loopback testing by default (can be disabled via ALLOW_LOCALHOST=false)
+ALLOW_LOCALHOST = os.getenv("ALLOW_LOCALHOST", "true").lower() in ("true", "1", "yes")
+ALLOW_PRIVATE_IPS = os.getenv("ALLOW_PRIVATE_IPS", "false").lower() in ("true", "1", "yes")
 
 BLOCKED_IP_NETWORKS = [
     ipaddress.ip_network("0.0.0.0/8"),          # Current network
@@ -33,11 +38,18 @@ BLOCKED_IP_NETWORKS = [
     ipaddress.ip_network("ff00::/8"),           # Multicast
 ]
 
+# Sensitive cloud metadata endpoints that must NEVER be accessed
 FORBIDDEN_HOSTNAMES = {
-    "localhost",
     "metadata.google.internal",
     "metadata",
     "instance-data",
+}
+
+LOOPBACK_HOSTNAMES = {
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "0.0.0.0",
 }
 
 CLOUD_METADATA_IPS = {
@@ -46,30 +58,89 @@ CLOUD_METADATA_IPS = {
 }
 
 
+def is_loopback_host(hostname: str) -> bool:
+    """Checks whether the hostname is a loopback / localhost address."""
+    clean = hostname.strip().strip("[]").lower()
+    if clean in LOOPBACK_HOSTNAMES or clean.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(clean)
+        return ip.is_loopback or ip.is_unspecified
+    except ValueError:
+        return False
+
+
+def normalize_target_url(url: str) -> str:
+    """
+    Ensures user-entered URL has a valid scheme.
+    If scheme is missing, defaults to http:// for localhost/loopback, or https:// otherwise.
+    """
+    if not url or not isinstance(url, str):
+        return ""
+    cleaned = url.strip()
+    if not cleaned:
+        return ""
+
+    lower = cleaned.lower()
+    if lower.startswith(("http://", "https://")):
+        return cleaned
+
+    # Preserve known non-http schemes so they get rejected by scheme validation
+    if re.match(r"^(ftp|file|javascript|data|ws|wss|mailto|ssh|tel|about):", lower):
+        return cleaned
+
+    # Loopback / localhost patterns
+    if lower.startswith(("localhost", "127.0.0.1", "0.0.0.0", "[::1]")) or ".localhost" in lower:
+        return f"http://{cleaned}"
+
+    # Standard domain names (e.g. example.com, demo.mycorp.org/page)
+    if re.match(r"^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+", cleaned):
+        return f"https://{cleaned}"
+
+    return cleaned
+
+
 def is_valid_scheme(url: str) -> bool:
     """Checks if the URL scheme is strictly http or https."""
     try:
-        parsed = urllib.parse.urlsplit(url.strip())
+        normalized = normalize_target_url(url)
+        parsed = urllib.parse.urlsplit(normalized)
         return parsed.scheme.lower() in ("http", "https")
     except Exception:
         return False
 
 
-def is_blocked_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> tuple[bool, str]:
+def is_blocked_ip(
+    ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address,
+    allow_localhost: bool | None = None,
+    allow_private_ips: bool | None = None,
+) -> tuple[bool, str]:
     """
     Checks if an IP address belongs to private, loopback, link-local,
     cloud-metadata, or reserved ranges.
     Returns (is_blocked: bool, reason: str).
     """
+    if allow_localhost is None:
+        allow_localhost = ALLOW_LOCALHOST
+    if allow_private_ips is None:
+        allow_private_ips = ALLOW_PRIVATE_IPS
+
     ip_str = str(ip_obj)
 
+    # Cloud metadata is forbidden in all environments
     if ip_str in CLOUD_METADATA_IPS:
         return True, f"Cloud metadata IP address '{ip_str}' is forbidden."
 
-    if ip_obj.is_loopback:
+    # Loopback / local host check
+    if ip_obj.is_loopback or ip_str == "0.0.0.0":
+        if allow_localhost:
+            return False, ""
         return True, f"Loopback IP address '{ip_str}' is forbidden."
 
+    # Private IP check
     if ip_obj.is_private:
+        if allow_private_ips:
+            return False, ""
         return True, f"Private IP address '{ip_str}' is forbidden."
 
     if ip_obj.is_link_local:
@@ -79,6 +150,19 @@ def is_blocked_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> tupl
         return True, f"Reserved, multicast, or unspecified IP address '{ip_str}' is forbidden."
 
     for net in BLOCKED_IP_NETWORKS:
+        if allow_localhost and net in (
+            ipaddress.ip_network("127.0.0.0/8"),
+            ipaddress.ip_network("::1/128"),
+            ipaddress.ip_network("0.0.0.0/8"),
+        ):
+            continue
+        if allow_private_ips and net in (
+            ipaddress.ip_network("10.0.0.0/8"),
+            ipaddress.ip_network("172.16.0.0/12"),
+            ipaddress.ip_network("192.168.0.0/16"),
+            ipaddress.ip_network("fc00::/7"),
+        ):
+            continue
         if ip_obj in net:
             return True, f"IP address '{ip_str}' falls into blocked range {net}."
 
@@ -98,6 +182,23 @@ def resolve_hostname_ips(hostname: str) -> list[ipaddress.IPv4Address | ipaddres
     except ValueError:
         pass
 
+    # RFC 6761 special localhost resolution fallback
+    if clean_host == "localhost" or clean_host.endswith(".localhost"):
+        try:
+            addrinfo = socket.getaddrinfo(clean_host, None)
+            ips = []
+            for entry in addrinfo:
+                ip_str = entry[4][0]
+                try:
+                    ips.append(ipaddress.ip_address(ip_str))
+                except ValueError:
+                    continue
+            if ips:
+                return ips
+        except Exception:
+            pass
+        return [ipaddress.ip_address("127.0.0.1"), ipaddress.ip_address("::1")]
+
     try:
         addrinfo = socket.getaddrinfo(clean_host, None)
         ips = []
@@ -113,19 +214,28 @@ def resolve_hostname_ips(hostname: str) -> list[ipaddress.IPv4Address | ipaddres
         raise ValueError(f"DNS resolution failed for '{clean_host}': {e}") from e
 
 
-def validate_target_url(url: str) -> tuple[bool, str]:
+def validate_target_url(
+    url: str,
+    allow_localhost: bool | None = None,
+    allow_private_ips: bool | None = None,
+) -> tuple[bool, str]:
     """
     Validates target URL:
     1. Scheme must be http or https
-    2. Hostname must be present and not in forbidden hostnames
-    3. Resolves DNS and rejects private, loopback, link-local, and cloud-metadata IP ranges:
-       (10.x, 172.16-31.x, 192.168.x, 127.x, 169.254.x, ::1, fc00::/7)
+    2. Hostname must be present and not in forbidden hostnames (e.g. cloud metadata)
+    3. Resolves DNS and rejects private, loopback (unless allow_localhost=True),
+       link-local, and cloud-metadata IP ranges.
     Returns (is_valid: bool, error_reason: str).
     """
+    if allow_localhost is None:
+        allow_localhost = ALLOW_LOCALHOST
+    if allow_private_ips is None:
+        allow_private_ips = ALLOW_PRIVATE_IPS
+
     if not url or not isinstance(url, str) or not url.strip():
         return False, "Target URL cannot be empty."
 
-    raw_url = url.strip()
+    raw_url = normalize_target_url(url)
     try:
         parsed = urllib.parse.urlsplit(raw_url)
     except Exception as e:
@@ -139,9 +249,19 @@ def validate_target_url(url: str) -> tuple[bool, str]:
     if not hostname:
         return False, "URL does not contain a valid hostname."
 
-    clean_host = hostname.lower()
-    if clean_host in FORBIDDEN_HOSTNAMES or clean_host.endswith(".localhost"):
+    clean_host = hostname.strip().strip("[]").lower()
+
+    if clean_host in FORBIDDEN_HOSTNAMES:
         return False, f"Forbidden hostname '{clean_host}'."
+
+    is_local = is_loopback_host(clean_host)
+    if is_local:
+        if not allow_localhost:
+            return False, f"Forbidden hostname '{clean_host}' (loopback addresses are disabled)."
+        # Prevent self-recursion against UXGremlin's internal API endpoints
+        backend_port = int(os.getenv("PORT", "8000"))
+        if (parsed.port or 80) == backend_port and parsed.path.startswith(("/api", "/docs", "/openapi.json")):
+            return False, f"Target URL cannot target UXGremlin's internal API endpoints (port {backend_port})."
 
     try:
         resolved_ips = resolve_hostname_ips(clean_host)
@@ -152,7 +272,11 @@ def validate_target_url(url: str) -> tuple[bool, str]:
         return False, f"Could not resolve any IP addresses for hostname '{clean_host}'."
 
     for ip_obj in resolved_ips:
-        blocked, reason = is_blocked_ip(ip_obj)
+        blocked, reason = is_blocked_ip(
+            ip_obj,
+            allow_localhost=allow_localhost,
+            allow_private_ips=allow_private_ips,
+        )
         if blocked:
             return False, reason
 
@@ -163,11 +287,14 @@ def validate_target_url(url: str) -> tuple[bool, str]:
 # 2. Playwright Route Interception (Redirects & Navigations)
 # ==============================================================================
 
-async def setup_route_interception(page_or_context: Any) -> None:
+async def setup_route_interception(page_or_context: Any, allow_localhost: bool | None = None) -> None:
     """
     Sets up route interception on the page or context to re-validate URLs
     on every navigation and redirect. Blocks forbidden requests with 'blockedbyclient'.
     """
+    if allow_localhost is None:
+        allow_localhost = ALLOW_LOCALHOST
+
     route_fn = getattr(page_or_context, "route", None)
     if not callable(route_fn):
         return
@@ -178,7 +305,7 @@ async def setup_route_interception(page_or_context: Any) -> None:
             req_url = req.url
 
             # Validate requested URL
-            is_safe, reason = validate_target_url(req_url)
+            is_safe, reason = validate_target_url(req_url, allow_localhost=allow_localhost)
             if not is_safe:
                 print(f"[Security Guard] Blocked request/redirect to forbidden URL: {req_url} ({reason})")
                 await route.abort("blockedbyclient")
@@ -188,7 +315,15 @@ async def setup_route_interception(page_or_context: Any) -> None:
             redir_from = getattr(req, "redirected_from", None)
             if redir_from:
                 redir_url = getattr(redir_from, "url", "")
-                redir_safe, redir_reason = validate_target_url(req_url)
+                origin_host = (urllib.parse.urlsplit(redir_url).hostname or "").lower()
+                dest_host = (urllib.parse.urlsplit(req_url).hostname or "").lower()
+                # SSRF guard: if redirected from an external public site, forbid redirecting to internal/loopback
+                if not is_loopback_host(origin_host) and is_loopback_host(dest_host):
+                    print(f"[Security Guard] Blocked SSRF redirect from external site {redir_url} to internal URL {req_url}")
+                    await route.abort("blockedbyclient")
+                    return
+
+                redir_safe, redir_reason = validate_target_url(req_url, allow_localhost=allow_localhost)
                 if not redir_safe:
                     print(f"[Security Guard] Blocked redirect from {redir_url} to {req_url} ({redir_reason})")
                     await route.abort("blockedbyclient")

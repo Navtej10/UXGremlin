@@ -21,7 +21,30 @@
     }
   }
 
+  function updateCartBadge() {
+    const cart = getCart();
+    const count = cart.reduce((acc, item) => acc + (item.qty || 1), 0);
+    const cartLinks = document.querySelectorAll('.nav-cart-link');
+    cartLinks.forEach(link => {
+      let badge = link.querySelector('.cart-count-badge');
+      if (count > 0) {
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'cart-count-badge';
+          badge.style.marginLeft = '4px';
+          badge.style.fontSize = '12px';
+          badge.style.opacity = '0.9';
+          link.appendChild(badge);
+        }
+        badge.textContent = `(${count})`;
+      } else if (badge) {
+        badge.remove();
+      }
+    });
+  }
+
   function addItemToCart(item) {
+    if (!item) return;
     const cart = getCart();
     const existingIndex = cart.findIndex(i => i.id === item.id);
     if (existingIndex > -1) {
@@ -30,6 +53,7 @@
       cart.push({ ...item, qty: 1 });
     }
     saveCart(cart);
+    updateCartBadge();
   }
 
   // --- Pricing Plans Data & Injection ---
@@ -76,6 +100,27 @@
     }
   ];
 
+  function initPlanButtons(root) {
+    const scope = root || document;
+    scope.querySelectorAll('.btn-plan-select').forEach(button => {
+      if (button.dataset.bbAttached) return;
+      button.dataset.bbAttached = 'true';
+      button.addEventListener('click', function () {
+        const id = this.getAttribute('data-plan-id');
+        const title = this.getAttribute('data-plan-title');
+        const price = parseFloat(this.getAttribute('data-plan-price')) || 0;
+        
+        addItemToCart({
+          id: id,
+          title: title,
+          price: price,
+          type: id && id.startsWith('sub-') ? 'Subscription' : 'Coffee',
+          frequency: id && id.startsWith('sub-') ? 'Monthly' : 'Single Purchase'
+        });
+      });
+    });
+  }
+
   function renderPlans(container) {
     if (!container) return;
 
@@ -103,22 +148,7 @@
     `).join('');
 
     container.innerHTML = `<div class="plans-grid">${html}</div>`;
-
-    container.querySelectorAll('.btn-plan-select').forEach(button => {
-      button.addEventListener('click', function () {
-        const id = this.getAttribute('data-plan-id');
-        const title = this.getAttribute('data-plan-title');
-        const price = parseFloat(this.getAttribute('data-plan-price'));
-        
-        addItemToCart({
-          id: id,
-          title: title,
-          price: price,
-          type: 'Subscription',
-          frequency: 'Monthly'
-        });
-      });
-    });
+    initPlanButtons(container);
   }
 
   // --- Cart Page Logic ---
@@ -320,19 +350,23 @@
 
     if (!modal) return;
 
+    let timer = null;
+
     function openModal() {
       modal.style.display = 'flex';
     }
 
     function closeModal() {
       modal.style.display = 'none';
-      setTimeout(openModal, 8000);
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(openModal, 8000);
     }
 
-    setTimeout(openModal, 4000);
+    timer = setTimeout(openModal, 4000);
 
     if (closeBtn) {
       closeBtn.addEventListener('click', function (e) {
+        e.preventDefault();
         e.stopPropagation();
         closeModal();
       });
@@ -347,7 +381,9 @@
   }
 
   // --- Document Ready Handler ---
-  document.addEventListener('DOMContentLoaded', function () {
+  function initApp() {
+    updateCartBadge();
+    initPlanButtons();
     initNewsletterModal();
 
     const pricingContainer = document.getElementById('pricing-plans-container');
@@ -360,5 +396,11 @@
     initCartPage();
     initCheckoutPage();
     initThanksPage();
-  });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initApp);
+  } else {
+    initApp();
+  }
 })();

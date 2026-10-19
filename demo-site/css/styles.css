@@ -710,20 +710,26 @@ a {
   text-align: center;
 }
 
-/* Tiny close button, light grey, fails contrast, tiny hit area */
+/* Tiny close button, light grey, fails contrast, hit area >= 16x16px via padding */
 .modal-close-bad {
   position: absolute;
-  top: 8px;
-  right: 8px;
+  top: 4px;
+  right: 4px;
   width: 14px;
   height: 14px;
-  padding: 0;
+  padding: 6px;
+  box-sizing: content-box;
   border: none;
   background: transparent;
   color: #bbbbbb;
   font-size: 11px;
   line-height: 14px;
   cursor: pointer;
+  z-index: 1002;
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .modal-content-bad h3 {

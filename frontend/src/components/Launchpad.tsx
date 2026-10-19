@@ -116,10 +116,29 @@ export function Launchpad({ onLaunch }: LaunchpadProps) {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!url.trim()) {
+    const trimmedUrl = url.trim();
+    if (!trimmedUrl) {
       setUrlError('Please enter a target website URL');
       return;
     }
+
+    // Auto-normalize scheme if missing
+    let targetUrl = trimmedUrl;
+    if (!/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(targetUrl)) {
+      const lower = targetUrl.toLowerCase();
+      if (
+        lower.startsWith('localhost') ||
+        lower.startsWith('127.0.0.1') ||
+        lower.startsWith('0.0.0.0') ||
+        lower.startsWith('[::1]') ||
+        lower.includes('.localhost')
+      ) {
+        targetUrl = `http://${targetUrl}`;
+      } else {
+        targetUrl = `https://${targetUrl}`;
+      }
+    }
+
     setUrlError(null);
     setIsSubmitting(true);
 
@@ -128,12 +147,13 @@ export function Launchpad({ onLaunch }: LaunchpadProps) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          url: url.trim(),
+          url: targetUrl,
           task: task.trim(),
           persona: selectedPersonas[0],
           personas: selectedPersonas,
           baseline,
           runs,
+          allow_localhost: true,
         }),
       });
 
@@ -141,7 +161,7 @@ export function Launchpad({ onLaunch }: LaunchpadProps) {
         const data = await response.json();
         onLaunch({
           session_id: data.session_id,
-          url: url.trim(),
+          url: targetUrl,
           task: task.trim(),
           persona: selectedPersonas[0],
           personas: selectedPersonas,
@@ -149,9 +169,14 @@ export function Launchpad({ onLaunch }: LaunchpadProps) {
           runs,
         });
       } else {
-        console.error('Failed to launch attack.');
+        const errData = await response.json().catch(() => ({}));
+        const errMsg = errData.detail || errData.error || `Failed to start session (${response.status})`;
+        setUrlError(errMsg);
+        console.error('Failed to launch attack:', errMsg);
       }
     } catch (err) {
+      const errMsg = (err as Error).message || 'Network error connecting to UXGremlin backend';
+      setUrlError(errMsg);
       console.error('Error launching attack:', err);
     } finally {
       setIsSubmitting(false);
@@ -208,14 +233,15 @@ export function Launchpad({ onLaunch }: LaunchpadProps) {
                     <label htmlFor="url" className="text-xs font-semibold text-ink">
                       Website target URL <span className="text-severity-critical-fg">*</span>
                     </label>
-                    <span className="text-[11px] font-mono text-muted">HTTPS only</span>
+                    <span className="text-[11px] font-mono text-muted">HTTP · HTTPS · Localhost</span>
                   </div>
                   <Input
                     id="url"
-                    type="url"
+                    type="text"
+                    inputMode="url"
                     required
                     mono
-                    placeholder="https://example.com/signup"
+                    placeholder="http://localhost:8080/index.html or https://..."
                     value={url}
                     error={urlError || undefined}
                     onChange={(e) => {
@@ -229,6 +255,31 @@ export function Launchpad({ onLaunch }: LaunchpadProps) {
                       </span>
                     }
                   />
+
+                  {/* Local Demo Quick-Fill Presets */}
+                  <div className="mt-2.5 flex items-center gap-1.5 flex-wrap">
+                    <span className="text-[11px] text-muted mr-1 font-medium select-none">
+                      Local demo:
+                    </span>
+                    <ChipSelect
+                      onClick={() => {
+                        setUrl('http://localhost:8080/index.html');
+                        setTask('Order a cold brew coffee and customize roast');
+                        if (urlError) setUrlError(null);
+                      }}
+                    >
+                      ☕ BetterBrew (Friction Demo)
+                    </ChipSelect>
+                    <ChipSelect
+                      onClick={() => {
+                        setUrl('http://localhost:8080/fixed/index.html');
+                        setTask('Order a cold brew coffee and customize roast');
+                        if (urlError) setUrlError(null);
+                      }}
+                    >
+                      ✨ BetterBrew (Fixed Version)
+                    </ChipSelect>
+                  </div>
                 </div>
 
                 {/* Target Task Textarea & Example Chips */}

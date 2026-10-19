@@ -15,6 +15,7 @@ from evidence import detect_findings_from_evidence, attach_screenshots_with_boun
 from personas import get_persona_config, PERSONAS
 from security import (
     validate_target_url,
+    normalize_target_url,
     setup_route_interception,
     setup_download_and_file_guards,
     session_rate_limiter,
@@ -67,6 +68,7 @@ class LaunchRequest(BaseModel):
     runs: int = 1
     max_steps: int | None = None
     max_duration: float | None = None
+    allow_localhost: bool | None = None
 
 # In-memory session store mapping session_id -> session data dict
 sessions: dict[str, dict] = {}
@@ -132,7 +134,7 @@ async def _run_baseline_phase(browser, target_url: str, task: str, queue_adapter
         "session_id": session_id,
     })
 
-    baseline_page = await browser.new_page(viewport={"width": 1280, "height": 800})
+    baseline_page = await browser.new_page(viewport={"width": 1280, "height": 800}, device_scale_factor=1.0)
     await setup_route_interception(baseline_page)
     await setup_download_and_file_guards(baseline_page)
     try:
@@ -412,9 +414,10 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
                         })
 
                         context = await browser.new_context(
-                            viewport=persona_cfg.viewport,
+                            viewport=persona_cfg.viewport or {"width": 1280, "height": 800},
                             is_mobile=persona_cfg.is_mobile,
                             has_touch=persona_cfg.has_touch,
+                            device_scale_factor=1.0,
                         )
                         page = await context.new_page()
                         await setup_route_interception(page)
@@ -561,9 +564,10 @@ async def _run_browser(req: LaunchRequest, q: stdlib_queue.Queue, session_id: st
 
                     persona_cfg = get_persona_config(p_id)
                     context = await browser.new_context(
-                        viewport=persona_cfg.viewport,
+                        viewport=persona_cfg.viewport or {"width": 1280, "height": 800},
                         is_mobile=persona_cfg.is_mobile,
                         has_touch=persona_cfg.has_touch,
+                        device_scale_factor=1.0,
                     )
                     page = await context.new_page()
                     await setup_route_interception(page)
@@ -931,7 +935,8 @@ async def launch_agent(req: LaunchRequest, request: Request):
         )
 
     # 2. Target URL validation
-    is_safe, error_msg = validate_target_url(req.url)
+    req.url = normalize_target_url(req.url)
+    is_safe, error_msg = validate_target_url(req.url, allow_localhost=req.allow_localhost)
     if not is_safe:
         raise HTTPException(
             status_code=400,

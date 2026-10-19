@@ -79,8 +79,8 @@ def test_validate_url_private_ip_ranges():
         assert "forbidden" in reason.lower() or "blocked" in reason.lower() or "private" in reason.lower()
 
 
-def test_validate_url_loopback_ranges():
-    # 127.x, localhost
+def test_validate_url_loopback_ranges_blocked_when_disabled():
+    # When allow_localhost is False, loopback URLs are blocked
     loopback_urls = [
         "http://127.0.0.1/",
         "http://127.0.0.1:8000/api",
@@ -90,9 +90,31 @@ def test_validate_url_loopback_ranges():
         "http://sub.localhost/",
     ]
     for url in loopback_urls:
-        ok, reason = validate_target_url(url)
-        assert ok is False, f"Expected loopback {url} to be blocked"
+        ok, reason = validate_target_url(url, allow_localhost=False)
+        assert ok is False, f"Expected loopback {url} to be blocked when disabled"
         assert "forbidden" in reason.lower() or "loopback" in reason.lower()
+
+
+def test_validate_url_allows_localhost_when_enabled():
+    # When allow_localhost is True (default for local UX testing), local dev URLs are accepted
+    allowed_local_urls = [
+        "http://localhost:8080/index.html",
+        "http://127.0.0.1:8080/fixed/index.html",
+        "http://localhost:3000/products",
+        "http://127.0.0.1:5173/",
+        "http://[::1]:8080/",
+        "localhost:8080/demo",
+    ]
+    for url in allowed_local_urls:
+        ok, reason = validate_target_url(url, allow_localhost=True)
+        assert ok is True, f"Expected local dev URL {url} to be allowed, but got: {reason}"
+
+
+def test_validate_url_rejects_self_api_recursion():
+    # UXGremlin must not test its own backend API endpoints
+    ok, reason = validate_target_url("http://localhost:8000/api/launch", allow_localhost=True)
+    assert ok is False
+    assert "internal api" in reason.lower()
 
 
 def test_validate_url_link_local_and_cloud_metadata():
@@ -110,10 +132,14 @@ def test_validate_url_link_local_and_cloud_metadata():
 
 
 def test_validate_url_ipv6_forbidden_ranges():
-    # ::1, fc00::/7 (ULA), fe80::/10 (link-local)
+    # ::1 loopback IPv6 is blocked when allow_localhost is disabled
+    for loopback in ["http://[::1]/", "http://[::1]:8080/admin"]:
+        ok, reason = validate_target_url(loopback, allow_localhost=False)
+        assert ok is False
+        assert "forbidden" in reason.lower() or "loopback" in reason.lower()
+
+    # fc00::/7 (ULA) and fe80::/10 (link-local) are blocked in all modes
     ipv6_urls = [
-        "http://[::1]/",
-        "http://[::1]:8080/admin",
         "http://[fc00::1]/",
         "http://[fd12:3456:789a:1::1]/",
         "http://[fe80::1]/",
@@ -331,11 +357,12 @@ def test_fake_form_data_sanitization():
 def test_api_launch_rejects_forbidden_urls(client):
     from unittest.mock import patch
     with patch("main.threading.Thread"):
-        # Loopback URL rejected with HTTP 400
+        # Loopback URL rejected when allow_localhost=False
         res_loopback = client.post("/api/launch", json={
             "url": "http://127.0.0.1:8080/admin",
             "task": "attack internal server",
             "persona": "pro_tester",
+            "allow_localhost": False,
         })
         assert res_loopback.status_code == 400
         assert "forbidden" in res_loopback.json()["detail"].lower()
@@ -357,6 +384,20 @@ def test_api_launch_rejects_forbidden_urls(client):
         })
         assert res_private.status_code == 400
         assert "forbidden" in res_private.json()["detail"].lower()
+
+
+def test_api_launch_accepts_localhost_by_default(client):
+    from unittest.mock import patch
+    with patch("main.threading.Thread"):
+        res = client.post("/api/launch", json={
+            "url": "http://localhost:8080/index.html",
+            "task": "test coffee demo site",
+            "persona": "pro_tester",
+        })
+        assert res.status_code == 200
+        data = res.json()
+        assert "session_id" in data
+        assert data["url"] == "http://localhost:8080/index.html"
 
 
 def test_api_launch_rate_limiting(client):

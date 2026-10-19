@@ -678,7 +678,7 @@ Respond ONLY with a valid JSON object matching:
         security_notes.append(fake_data_note)
 
     # Return final report: score numbers remain strictly deterministic and unaltered
-    return {
+    rep = {
         "score": score_data,
         "verdict": verdict,
         "findings": findings,
@@ -687,6 +687,12 @@ Respond ONLY with a valid JSON object matching:
         "fake_data_used": True,
         "security_notes": security_notes,
     }
+    try:
+        from report_translator import translate_full_report
+        rep = translate_full_report(rep, steps=steps)
+    except Exception as e:
+        print(f"Report translation warning: {e}")
+    return rep
 
 
 def _normalize_title(t: str) -> str:

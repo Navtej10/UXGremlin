@@ -559,6 +559,9 @@ MODAL_SELECTORS = [
     ".modal.open",
     ".modal:not([style*='display: none']):not([style*='display:none'])",
     ".swal2-modal",
+    ".modal-overlay-bad",
+    "#newsletter-modal",
+    "[class*='modal-overlay']",
 ]
 
 MODAL_CLOSE_SELECTORS = [
@@ -567,6 +570,8 @@ MODAL_CLOSE_SELECTORS = [
     "button.close",
     "[data-dismiss='modal']",
     "[aria-label='Close']",
+    "#newsletter-modal-close",
+    ".modal-close-bad",
     "button:has-text('✕')",
     "button:has-text('×')",
     "button:has-text('Close')",
@@ -758,7 +763,10 @@ async def extract_visible_interactive_elements(page: Page, persona_cfg: PersonaC
                 const uxgId = `uxg-${num}`;
                 el.setAttribute('data-uxg-id', uxgId);
 
-                let label = text || (placeholder ? `[${placeholder}]` : (href ? href.slice(0, 40) : tag));
+                const isCloseBtn = el.classList.contains('modal-close-bad') || (el.id && el.id.includes('modal-close'));
+                const accessibleName = el.getAttribute('aria-label') || (isCloseBtn ? 'Close modal (✕)' : '') || text || placeholder || el.getAttribute('title') || (tag === 'input' ? el.getAttribute('value') : '') || '';
+
+                let label = (isCloseBtn ? 'Close modal (✕)' : '') || text || (placeholder ? `[${placeholder}]` : (href ? href.slice(0, 40) : tag));
                 if (isDisabled) label += " [DISABLED]";
 
                 const explicitRole = el.getAttribute('role');
@@ -771,8 +779,6 @@ async def extract_visible_interactive_elements(page: Page, persona_cfg: PersonaC
                     else if (tag === 'select') role = 'combobox';
                     else role = tag;
                 }
-
-                const accessibleName = el.getAttribute('aria-label') || text || placeholder || el.getAttribute('title') || (tag === 'input' ? el.getAttribute('value') : '') || '';
 
                 items.push({
                     num: num,
@@ -847,12 +853,175 @@ def normalize_target(target: Any) -> str:
         return f'[data-uxg-id="uxg-{target_str}"]'
     return target_str
 
-async def perform_action(page: Page, action: str, target: str, value: str = "", timeout: float = 3.0, click_count: int = 1):
+
+def parse_coordinates(target: Any) -> tuple[float, float] | None:
+    if isinstance(target, dict):
+        if "x" in target and "y" in target:
+            try:
+                return float(target["x"]), float(target["y"])
+            except (ValueError, TypeError):
+                pass
+    if isinstance(target, (list, tuple)) and len(target) >= 2:
+        try:
+            return float(target[0]), float(target[1])
+        except (ValueError, TypeError):
+            pass
+    if isinstance(target, str):
+        m = re.match(r"^\s*\(?\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\)?\s*$", target.strip())
+        if m:
+            try:
+                return float(m.group(1)), float(m.group(2))
+            except (ValueError, TypeError):
+                pass
+    return None
+
+
+async def check_empty_section_loading(page: Page) -> bool:
+    try:
+        return await page.evaluate("""() => {
+            const emptyContainers = document.querySelectorAll(
+                '#pricing-plans-container, .plans-container-bad, [aria-busy="true"], .loading-container, .skeleton-loader'
+            );
+            for (const el of emptyContainers) {
+                if (el.children.length === 0 && (!el.innerText || el.innerText.trim() === "")) {
+                    return true;
+                }
+            }
+            return false;
+        }""")
+    except Exception:
+        return False
+
+
+async def detect_page_blockers(page: Page) -> list[str]:
+    try:
+        return await page.evaluate("""() => {
+            const blockers = [];
+            // Check modal overlay
+            const modal = document.querySelector('.modal-overlay-bad, #newsletter-modal, [role="dialog"], .modal');
+            if (modal) {
+                const style = window.getComputedStyle(modal);
+                if (style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0') {
+                    const title = (modal.querySelector('h1, h2, h3, h4')?.innerText || 'Newsletter / Promo Modal').trim();
+                    blockers.push(`Modal overlay active ('${title}') blocking access to underlying elements`);
+                }
+            }
+            // Check error banners
+            const banner = document.querySelector('.bad-error-banner, #form-error-banner, [role="alert"]');
+            if (banner) {
+                const style = window.getComputedStyle(banner);
+                if (style.display !== 'none' && banner.innerText.trim()) {
+                    blockers.push(`Form error banner displayed ('${banner.innerText.trim()}')`);
+                }
+            }
+            // Check mobile sticky bar overlapping
+            const sticky = document.querySelector('.mobile-sticky-bar');
+            if (sticky) {
+                const style = window.getComputedStyle(sticky);
+                if (style.display !== 'none') {
+                    blockers.push('Mobile sticky bar overlapping viewport bottom');
+                }
+            }
+            return blockers;
+        }""")
+    except Exception:
+        return []
+
+
+async def capture_click_state(page: Page) -> dict:
+    try:
+        return await page.evaluate("""() => {
+            const body = document.body;
+            if (!body) return {};
+            
+            // 1. Visible text length
+            const textLength = (body.innerText || "").length;
+            
+            // 2. Total DOM element count
+            const elementCount = document.querySelectorAll('*').length;
+            
+            // 3. Modal/overlay presence and visibility
+            const modals = document.querySelectorAll(
+                '.modal-overlay-bad, #newsletter-modal, [role="dialog"], .modal, .dialog, .overlay'
+            );
+            const modalStates = Array.from(modals).map(m => {
+                const s = window.getComputedStyle(m);
+                return `${m.id || m.className}:${s.display}:${s.visibility}:${s.opacity}`;
+            }).join(';');
+            
+            // 4. Cart or counter text
+            const cartEls = document.querySelectorAll(
+                '.nav-cart-link, .cart-count-badge, #cart-subtotal, #cart-total, [class*="cart"], [id*="cart"], [class*="count"], [class*="badge"]'
+            );
+            const cartText = Array.from(cartEls).map(c => (c.innerText || '').trim()).join('|');
+            
+            // 5. Input values and error banners
+            const inputs = Array.from(document.querySelectorAll('input, select, textarea')).map(i => i.value).join('|');
+            const banners = Array.from(document.querySelectorAll('.bad-error-banner, #form-error-banner, [role="alert"], .error, .alert')).map(b => {
+                const s = window.getComputedStyle(b);
+                return `${s.display}:${(b.innerText || '').trim()}`;
+            }).join('|');
+            
+            return {
+                url: window.location.href,
+                textLength,
+                elementCount,
+                modalStates,
+                cartText,
+                inputs,
+                banners
+            };
+        }""")
+    except Exception:
+        return {}
+
+
+def is_click_state_identical(before: dict, after: dict) -> bool:
+    if not before or not after:
+        return False
+    return (
+        before.get("url") == after.get("url") and
+        before.get("textLength") == after.get("textLength") and
+        before.get("elementCount") == after.get("elementCount") and
+        before.get("modalStates") == after.get("modalStates") and
+        before.get("cartText") == after.get("cartText") and
+        before.get("inputs") == after.get("inputs") and
+        before.get("banners") == after.get("banners")
+    )
+
+
+async def perform_action(page: Page, action: str, target: Any, value: str = "", timeout: float = 3.0, click_count: int = 1):
     """
     Returns (success: bool, error_msg: str | None).
     """
     if action in ("download", "file_chooser", "upload", "filechooser"):
         return False, "File chooser and download actions are blocked for security."
+
+    coords = parse_coordinates(target)
+    if coords and action == "click":
+        x, y = coords
+        vp = page.viewport_size or {"width": 1280, "height": 800}
+        x = max(0.0, min(float(vp.get("width", 1280)), x))
+        y = max(0.0, min(float(vp.get("height", 800)), y))
+        try:
+            interceptor = await page.evaluate("""([cx, cy]) => {
+                const topEl = document.elementFromPoint(cx, cy);
+                if (topEl) {
+                    const modal = topEl.closest('.modal-overlay-bad, #newsletter-modal, [role="dialog"], .modal');
+                    if (modal) {
+                        const id = modal.id ? ` id="${modal.id}"` : '';
+                        const cls = modal.className ? ` class="${modal.className}"` : '';
+                        return `<${modal.tagName.toLowerCase()}${id}${cls}>`;
+                    }
+                }
+                return null;
+            }""", [x, y])
+            if interceptor:
+                return False, f"Click blocked by overlay: {interceptor}. Dismiss or close the overlay before interacting."
+            await page.mouse.click(x, y, click_count=click_count)
+            return True, None
+        except Exception as e:
+            return False, f"Could not click coordinates ({x}, {y}): {e}"
 
     selector = normalize_target(target)
     if re.search(r"type\s*=\s*['\"]?file['\"]?", f"{target} {selector}", re.IGNORECASE):
@@ -867,21 +1036,43 @@ async def perform_action(page: Page, action: str, target: str, value: str = "", 
             await loc.click(timeout=timeout_ms, click_count=click_count)
             return True, None
         except Exception as e1:
-            # Fallback 1: force click in case of overlay/clipping
+            err_str = str(e1)
+            interceptor = None
+            m_intercept = re.search(r"(<[a-zA-Z0-9_-]+[^>]*>)\s*intercepts pointer events", err_str, re.IGNORECASE)
+            if m_intercept:
+                interceptor = m_intercept.group(1)
+            else:
+                try:
+                    interceptor = await page.evaluate("""(sel) => {
+                        const el = document.querySelector(sel);
+                        if (!el) return null;
+                        const rect = el.getBoundingClientRect();
+                        const cx = rect.left + rect.width / 2;
+                        const cy = rect.top + rect.height / 2;
+                        const topEl = document.elementFromPoint(cx, cy);
+                        if (topEl && topEl !== el && !el.contains(topEl)) {
+                            const id = topEl.id ? ` id="${topEl.id}"` : '';
+                            const cls = topEl.className ? ` class="${topEl.className}"` : '';
+                            return `<${topEl.tagName.toLowerCase()}${id}${cls}>`;
+                        }
+                        return null;
+                    }""", selector)
+                except Exception:
+                    interceptor = None
+
+            if interceptor:
+                return False, f"Click blocked by overlay: {interceptor}. Dismiss or close the overlay before interacting with this element."
+
+            # Fallback: text-based locator with actionability (no blind force click)
             try:
-                loc = page.locator(selector).first
-                await loc.click(force=True, timeout=timeout_ms, click_count=click_count)
-                return True, None
-            except Exception:
-                pass
-            # Fallback 2: text-based locator
-            try:
-                clean_text = target.replace('[data-uxg-id="', '').replace('"]', '').strip()
+                clean_text = str(target).replace('[data-uxg-id="', '').replace('"]', '').strip()
                 loc = page.get_by_text(clean_text, exact=False).first
-                await loc.click(timeout=timeout_ms, click_count=click_count)
+                await loc.wait_for(state="visible", timeout=min(timeout_ms, 1000))
+                await loc.scroll_into_view_if_needed(timeout=min(timeout_ms, 1000))
+                await loc.click(timeout=min(timeout_ms, 1000), click_count=click_count)
                 return True, None
             except Exception:
-                return False, f"Element '{target}' is not visible or interactable"
+                return False, f"Element '{target}' is not visible or interactable ({err_str[:120]})"
 
     elif action == "type":
         try:
@@ -907,10 +1098,24 @@ async def perform_action(page: Page, action: str, target: str, value: str = "", 
 
 async def settle(page: Page, extra: float = 0.5):
     try:
-        await page.wait_for_load_state("domcontentloaded", timeout=2500)
+        await page.wait_for_load_state("networkidle", timeout=800)
     except Exception:
-        pass
-    await asyncio.sleep(extra)
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=1500)
+        except Exception:
+            pass
+
+    # Wait longer (up to ~8s) when the page appears to have an empty section still loading
+    is_loading = await check_empty_section_loading(page)
+    if is_loading:
+        t_start = time.time()
+        while time.time() - t_start < 8.0:
+            await asyncio.sleep(0.5)
+            still_loading = await check_empty_section_loading(page)
+            if not still_loading:
+                break
+    else:
+        await asyncio.sleep(extra)
 
 
 async def screenshot_with_highlight(page: Page, target: str) -> str:
@@ -1401,8 +1606,9 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
 
             target_num, target_id = parse_som_target(raw_target, visible_elements)
             target = target_id
-            m = re.search(r"uxg-\d+", target or "")
-            target_id = m.group(0) if m else target
+            target_str = json.dumps(target) if isinstance(target, dict) else str(target or "")
+            m = re.search(r"uxg-\d+", target_str)
+            target_id = m.group(0) if m else target_str
             label = labels.get(target_id, str(raw_target)) if target_id else (str(raw_target) or "")
             target_el = elements_by_id.get(target_id)
 
@@ -1624,7 +1830,7 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
                 else:
                     action_desc = f"Interacting with '{target}'"
 
-                shot = await screenshot_with_highlight(page, target) if action in ("click", "type") else base64_image
+                shot = await screenshot_with_highlight(page, target) if (action in ("click", "type") and not parse_coordinates(target)) else base64_image
                 await queue.put({
                     "step": step + 1,
                     "action": action,
@@ -1632,12 +1838,9 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
                     "screenshot": shot
                 })
 
-                dom_before = ""
+                state_before = {}
                 if action == "click":
-                    try:
-                        dom_before = await page.evaluate("() => document.body ? `${document.body.innerText.length}:${document.querySelectorAll('*').length}` : ''")
-                    except Exception:
-                        dom_before = ""
+                    state_before = await capture_click_state(page)
 
                 action_timeout = persona_cfg.timeouts.get("action_timeout", 3.0)
                 t0 = time.time()
@@ -1648,12 +1851,9 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
 
                 is_dead_click = False
                 if action == "click" and success:
-                    try:
-                        dom_after = await page.evaluate("() => document.body ? `${document.body.innerText.length}:${document.querySelectorAll('*').length}` : ''")
-                        if page.url == url_before and dom_after == dom_before:
-                            is_dead_click = True
-                    except Exception:
-                        pass
+                    state_after = await capture_click_state(page)
+                    if is_click_state_identical(state_before, state_after):
+                        is_dead_click = True
 
                 if is_dead_click:
                     no_change_click_count += 1
@@ -1707,6 +1907,11 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
                 # 3. Check loop detection: if same action on same element 3x or URL/DOM hash unchanged for 3 steps
                 is_loop, loop_reason, loop_hint = check_loop_detection(action_history, state_hash_history)
                 if is_loop:
+                    blockers = await detect_page_blockers(page)
+                    if blockers:
+                        blocker_details = "; ".join(blockers)
+                        loop_hint = f"{loop_hint} Detected active blocker(s): {blocker_details}."
+                        step_evidence.setdefault("blockers", []).extend(blockers)
                     await queue.put({"thought": f"{tag}[Loop Detection] {loop_reason}. Hint: {loop_hint}"})
                     should_stop, outcome, reason_str = evaluate_stop_rules(
                         step=step + 1,
@@ -1902,6 +2107,12 @@ Valid "action" values: "click", "type", "scroll", "done", "abort".
                 "impact": "No steps could be executed on the target application.",
                 "recommendation": "Check that the target server is running and accessible, then rerun the test.",
             }]
+
+    try:
+        from report_translator import translate_full_report
+        report = translate_full_report(report, steps=steps)
+    except Exception as e:
+        print(f"Report translation in agent.py warning: {e}")
 
     if session_data is not None:
         session_data["report"] = report

@@ -49,21 +49,37 @@ export interface ActionItem {
 
 interface ScorePart {
   name: string;
+  raw_name?: string;
   points: number;
   evidence: number[];
   why: string;
 }
 
 export interface Finding {
+  id?: string;
   title: string;
-  severity: 'critical' | 'high' | 'medium';
-  evidence_steps: number[];
+  severity: 'critical' | 'high' | 'medium' | 'low' | 'High' | 'Medium' | 'Low';
+  severity_label?: string;
+  evidence_steps?: number[];
   what_happened: string;
-  impact: string;
-  recommendation: string;
+  why_it_matters?: string;
+  how_to_fix?: string;
+  where?: string;
+  affected_count?: string;
+  screenshot?: string | null;
+  screenshot_caption?: string;
+  theme?: string;
+  technical?: {
+    rule_id?: string;
+    selector?: string;
+    wcag?: string;
+    suggested_css_or_html?: string;
+    raw_evidence?: any;
+  };
+  impact?: string;
+  recommendation?: string;
   consistency?: 'consistent' | 'occasional';
   step_number?: number;
-  screenshot?: string | null;
   bounding_box?: { x: number; y: number; width: number; height: number } | null;
   suggested_fix?: string;
   selector?: string;
@@ -93,6 +109,7 @@ export interface SabotageReport {
   verified_outcome?: string;
   baseline_failed?: boolean;
   baseline_note?: string;
+  plain_baseline_message?: string;
   expected_steps?: number;
   runs?: number;
   score_min?: number;
@@ -101,6 +118,7 @@ export interface SabotageReport {
   score: {
     total: number;
     label: string;
+    plain_label?: string;
     parts: ScorePart[];
     steps_taken: number;
     ideal_steps: number;
@@ -111,6 +129,8 @@ export interface SabotageReport {
   };
   verdict: string;
   findings: Finding[];
+  top_findings?: Finding[];
+  minor_findings?: Finding[];
   bugs?: number;
   actions?: ActionItem[];
 }
@@ -144,6 +164,98 @@ const PERSONA_NAMES: Record<string, string> = {
   skeptic: '🧐 Skeptical User',
   mobile: '📱 Mobile User',
 };
+
+const PERSONA_FIRST_NAMES: Record<string, string> = {
+  pro_tester: 'Alex',
+  impatient: 'Riley',
+  confused: 'Morgan',
+  skeptic: 'Sam',
+  mobile: 'Taylor',
+};
+
+function getPersonaFirstName(persona: string): string {
+  const p = persona?.toLowerCase() || '';
+  for (const [key, name] of Object.entries(PERSONA_FIRST_NAMES)) {
+    if (p.includes(key)) return name;
+  }
+  return 'The test user';
+}
+
+const PENALTY_HUMAN_NAMES: Record<string, { name: string; why: string }> = {
+  'Dead Clicks': {
+    name: 'Clicks that did nothing',
+    why: 'The user clicked several buttons or links that gave no visual response or action.',
+  },
+  'Task Outcome Failure': {
+    name: "Couldn't finish the task",
+    why: 'The test user was unable to complete the main goal and had to give up.',
+  },
+  'Reported UX Confusion': {
+    name: 'Confusing moments',
+    why: 'The test user paused or hesitated because the page layout or options were unclear.',
+  },
+  'Critical UI/A11y Violations': {
+    name: 'Accessibility problems',
+    why: 'Severe accessibility barriers that block visitors with disabilities or screen readers.',
+  },
+  'Moderate UI/A11y Violations': {
+    name: 'Moderate accessibility problems',
+    why: 'Obstacles that make navigation difficult for assistive technologies.',
+  },
+  'Minor UI/A11y Violations': {
+    name: 'Minor polish issues',
+    why: 'Small layout imperfections that reduce overall usability polish.',
+  },
+  'Excess Steps': {
+    name: 'Extra unnecessary steps',
+    why: 'Reaching the goal required significantly more clicks and page loads than expected.',
+  },
+  'Slow Steps': {
+    name: 'Slow page responses',
+    why: 'Several interactions or page updates took longer than 2 seconds.',
+  },
+  'Rage Clicks': {
+    name: 'Frustrated repeated clicks',
+    why: 'The user rapidly clicked the same unresponsive spot out of frustration.',
+  },
+  'Audit Interrupted (System / Timeout)': {
+    name: 'Test stopped early',
+    why: 'Testing concluded early due to an infrastructure timeout cap.',
+  },
+};
+
+function getHumanPenaltyInfo(rawName: string, existingWhy?: string): { name: string; why: string } {
+  if (PENALTY_HUMAN_NAMES[rawName]) return PENALTY_HUMAN_NAMES[rawName];
+  for (const [key, val] of Object.entries(PENALTY_HUMAN_NAMES)) {
+    if (rawName.toLowerCase().includes(key.toLowerCase())) return val;
+  }
+  return { name: rawName, why: existingWhy || '' };
+}
+
+function getPlainScoreLabel(score: number): string {
+  if (score >= 70) return `${score}/100: Severe. A real visitor would likely give up`;
+  if (score >= 40) return `${score}/100: Moderate. Visitors experience noticeable hesitation`;
+  if (score >= 15) return `${score}/100: Minor friction. Usable with small speedbumps`;
+  return `${score}/100: Smooth. Visitors easily reach their goal`;
+}
+
+function getPlainOutcomeSentence(
+  outcome: string | undefined,
+  task: string | undefined,
+  stepsTaken: number,
+  persona: string
+): string {
+  const name = getPersonaFirstName(persona);
+  const cleanTask = task ? `to ${task.replace(/^to\s+/i, '')}` : 'the goal';
+
+  if (outcome === 'abandoned' || outcome === 'gave_up') {
+    return `${name} tried ${cleanTask} but gave up at step ${stepsTaken}.`;
+  }
+  if (outcome === 'timeout' || outcome === 'system_error') {
+    return `The test user tried ${cleanTask} but the session stopped early at step ${stepsTaken}.`;
+  }
+  return `${name} completed ${cleanTask} in ${stepsTaken} steps.`;
+}
 
 export type ReportViewMode = 'score' | 'explanation' | 'run';
 
@@ -656,39 +768,14 @@ export function Report({
             </div>
           </div>
 
-          {/* Task Outcome Banner Card */}
-          {outcome && (
-            <Card className="p-5 border-stone">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[11px] uppercase tracking-wider text-muted font-bold">
-                  Task Outcome ({PERSONA_NAMES[selectedPersona]?.split(' ')[0] || selectedPersona})
-                </span>
-                {claimedOutcome && verifiedOutcome && claimedOutcome !== verifiedOutcome && (
-                  <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded bg-canvas text-muted border border-stone">
-                    Claimed: {claimedOutcome} · Verified: {verifiedOutcome}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-3">
-                <Badge variant={outcomeVariant}>{outcome}</Badge>
-                {outcomeReason && (
-                  <p className="text-xs text-muted leading-relaxed pl-3 border-l-2 border-stone">
-                    {outcomeReason}
-                  </p>
-                )}
-              </div>
-            </Card>
-          )}
-
-          {/* Friction Score Breakdown Card */}
+          {/* ================================================================= */}
+          {/* 1. VERDICT CARD: Friction Score, Outcome Sentence, & Breakdown     */}
+          {/* ================================================================= */}
           <Card className="p-6">
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-xs uppercase font-bold text-muted tracking-wider">
-                Friction Score Breakdown
+                Usability Verdict &amp; Friction Breakdown
               </h3>
-              <span className="text-xs text-muted font-mono italic">
-                Heuristic score, not a validated metric.
-              </span>
             </div>
 
             {!currentScore ? (
@@ -701,11 +788,16 @@ export function Report({
                       {currentScore.total}
                     </div>
                     <div>
-                      <div className="text-sm font-bold text-ink">
-                        {currentScore.label} Friction Level
+                      <div className="text-base font-bold text-ink">
+                        {currentScore.plain_label || getPlainScoreLabel(currentScore.total)}
                       </div>
-                      <div className="text-xs text-muted mt-0.5 font-mono">
-                        {currentScore.steps_taken} steps taken · about {currentScore.ideal_steps} expected
+                      <div className="text-xs text-muted mt-1 leading-relaxed">
+                        {getPlainOutcomeSentence(
+                          outcome,
+                          activeReport?.task || report?.task || session.task,
+                          currentScore.steps_taken,
+                          selectedPersona
+                        )}
                       </div>
                     </div>
                   </div>
@@ -722,82 +814,227 @@ export function Report({
                   )}
                 </div>
 
-                {/* Plain-Language Verdict */}
+                {/* Plain-Language Verdict Narrative */}
                 <p className="mt-4 text-sm text-ink leading-relaxed font-medium">
                   {activeReport?.verdict || report?.verdict}
                 </p>
 
-                {/* Cognitive Friction Penalties List */}
+                {/* Why the score is this high */}
                 <div className="mt-6 space-y-3">
                   <h4 className="text-xs uppercase font-bold text-muted tracking-wider">
-                    Cognitive Friction Penalties &amp; Heuristics
+                    Why the score is this high
                   </h4>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {currentScore.parts?.map((p) => (
-                      <div
-                        key={p.name}
-                        className="p-4 rounded-xl bg-canvas border border-stone flex flex-col justify-between gap-2"
-                      >
-                        <div>
-                          <div className="flex justify-between items-center text-xs font-semibold">
-                            <span className="text-ink">{p.name}</span>
-                            <span className="text-severity-critical-fg font-mono font-bold">
-                              +{p.points} pts
-                            </span>
-                          </div>
-                          <div className="h-1.5 rounded-full bg-stone mt-2 overflow-hidden">
-                            <div
-                              className="h-1.5 rounded-full bg-severity-critical-fg"
-                              style={{ width: `${Math.min(100, p.points * 5)}%` }}
-                            />
-                          </div>
-                          <p className="mt-2 text-xs text-muted leading-relaxed">{p.why}</p>
-                        </div>
-
-                        {p.evidence && p.evidence.length > 0 && (
-                          <div className="mt-2 pt-2 border-t border-stone/60 flex items-center gap-1.5 flex-wrap">
-                            <span className="text-[10px] uppercase font-bold text-muted mr-1">
-                              Evidence:
-                            </span>
-                            {p.evidence.slice(0, 8).map((n) => (
-                              <StepChip
-                                key={n}
-                                step={n}
-                                onClick={() => jumpToStep(n)}
+                    {currentScore.parts?.map((p) => {
+                      const humanPart = getHumanPenaltyInfo(p.name, p.why);
+                      return (
+                        <div
+                          key={p.name}
+                          className="p-4 rounded-xl bg-canvas border border-stone flex flex-col justify-between gap-2"
+                        >
+                          <div>
+                            <div className="flex justify-between items-center text-xs font-semibold">
+                              <span className="text-ink">{humanPart.name}</span>
+                              <span className="text-severity-critical-fg font-mono font-bold">
+                                +{p.points} pts
+                              </span>
+                            </div>
+                            <div className="h-1.5 rounded-full bg-stone mt-2 overflow-hidden">
+                              <div
+                                className="h-1.5 rounded-full bg-severity-critical-fg"
+                                style={{ width: `${Math.min(100, p.points * 5)}%` }}
                               />
-                            ))}
+                            </div>
+                            <p className="mt-2 text-xs text-muted leading-relaxed">
+                              {humanPart.why}
+                            </p>
                           </div>
-                        )}
-                      </div>
-                    ))}
+
+                          {p.evidence && p.evidence.length > 0 && (
+                            <div className="mt-2 pt-2 border-t border-stone/60 flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[10px] uppercase font-bold text-muted mr-1">
+                                Evidence:
+                              </span>
+                              {p.evidence.slice(0, 8).map((n) => (
+                                <StepChip
+                                  key={n}
+                                  step={n}
+                                  onClick={() => jumpToStep(n)}
+                                />
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               </>
             )}
           </Card>
 
-          {/* Usability Findings List */}
-          <div className="flex flex-col gap-4">
-            <div className="flex items-center justify-between">
-              <h3 className="text-base font-bold text-ink flex items-center gap-2">
-                <span>Usability Findings &amp; Defect Highlights</span>
-                <span className="text-xs font-mono font-normal px-2.5 py-0.5 rounded-full bg-surface border border-stone text-muted">
-                  {currentFindings.length} {currentFindings.length === 1 ? 'Finding' : 'Findings'}
-                </span>
-              </h3>
-            </div>
-
-            {currentFindings.length === 0 ? (
-              <div className="p-8 text-center text-muted text-sm bg-surface border border-stone rounded-2xl">
-                No critical usability vulnerabilities detected for this persona.
+          {/* ================================================================= */}
+          {/* 2. BASELINE FAILURE BLOCKER CARD (Goal Unreachable)               */}
+          {/* ================================================================= */}
+          {(activeReport?.baseline_failed || report?.baseline_failed) && (
+            <Card className="p-6 border-severity-critical-fg/40 bg-severity-critical-bg/25">
+              <div className="flex items-start gap-4">
+                <div className="w-10 h-10 rounded-xl bg-severity-critical-bg border border-severity-critical-fg/30 flex items-center justify-center text-severity-critical-fg shrink-0">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div className="flex-1 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="critical">Goal Blocked</Badge>
+                  </div>
+                  <h3 className="text-base font-bold text-ink">
+                    The test user could not complete the goal. Here is where they got stuck and what was in their way.
+                  </h3>
+                  <p className="text-xs text-muted leading-relaxed">
+                    {activeReport?.plain_baseline_message ||
+                      activeReport?.baseline_note ||
+                      report?.baseline_note ||
+                      'The user encountered an impassable obstacle or unclear navigation path.'}
+                  </p>
+                  {slideshowItems[slideshowItems.length - 1]?.screenshot && (
+                    <div className="mt-3 max-w-md rounded-xl overflow-hidden border border-severity-critical-fg/30 bg-surface p-2">
+                      <div className="text-[10px] text-muted uppercase font-bold mb-1">
+                        Last screen reached:
+                      </div>
+                      <img
+                        src={`data:image/jpeg;base64,${slideshowItems[slideshowItems.length - 1].screenshot}`}
+                        alt="Stuck point snapshot"
+                        className="max-h-48 w-full object-contain rounded"
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
-            ) : (
-              currentFindings.map((f, idx) => (
+            </Card>
+          )}
+
+          {/* ================================================================= */}
+          {/* 3. "WHAT WENT WRONG" TIMELINE: Step-by-Step User Journey           */}
+          {/* ================================================================= */}
+          {slideshowItems.length > 0 && (
+            <Card className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xs uppercase font-bold text-muted tracking-wider">
+                  What went wrong — step-by-step journey ({slideshowItems.length} steps)
+                </h3>
+                <span className="text-xs text-muted">Click any step to inspect</span>
+              </div>
+              <div className="flex gap-4 overflow-x-auto pb-3 pt-1">
+                {slideshowItems.map((item, idx) => {
+                  const stNum = idx + 1;
+                  const isStuck =
+                    idx === slideshowItems.length - 1 &&
+                    (outcome === 'abandoned' || outcome === 'gave_up' || outcome === 'timeout');
+
+                  return (
+                    <div
+                      key={idx}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => jumpToStep(stNum)}
+                      className={`min-w-[220px] max-w-[240px] shrink-0 p-3 rounded-xl border text-left cursor-pointer transition-all hover:border-gremlin ${
+                        isStuck
+                          ? 'border-severity-critical-fg/60 bg-severity-critical-bg/20'
+                          : 'border-stone bg-canvas'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-bold font-mono text-ink">
+                          Step {stNum}
+                        </span>
+                        {isStuck && (
+                          <span className="text-[10px] font-extrabold uppercase px-1.5 py-0.5 rounded bg-severity-critical-fg text-surface">
+                            STUCK HERE
+                          </span>
+                        )}
+                      </div>
+
+                      {item.screenshot ? (
+                        <div className="h-28 w-full rounded-lg overflow-hidden bg-surface border border-stone/50 mb-2.5 flex items-center justify-center">
+                          <img
+                            src={`data:image/jpeg;base64,${item.screenshot}`}
+                            alt={`Step ${stNum}`}
+                            className="max-h-full max-w-full object-contain"
+                          />
+                        </div>
+                      ) : (
+                        <div className="h-28 w-full rounded-lg bg-surface/50 border border-dashed border-stone mb-2.5 flex items-center justify-center text-[11px] text-muted font-mono">
+                          No snapshot
+                        </div>
+                      )}
+
+                      <p className="text-xs text-ink font-medium line-clamp-2 mb-1">
+                        {item.thought || item.action || `Action at step ${stNum}`}
+                      </p>
+                    </div>
+                  );
+                })}
+              </div>
+            </Card>
+          )}
+
+          {/* ================================================================= */}
+          {/* 4. "TOP PROBLEMS TO FIX FIRST" FINDINGS CARDS                     */}
+          {/* ================================================================= */}
+          {(() => {
+            const topFindings =
+              activeReport?.top_findings && activeReport.top_findings.length > 0
+                ? activeReport.top_findings
+                : currentFindings.slice(0, 6);
+
+            const minorFindings =
+              activeReport?.minor_findings && activeReport.minor_findings.length > 0
+                ? activeReport.minor_findings
+                : currentFindings.slice(6);
+
+            const renderFindingCard = (f: Finding, idx: number) => {
+              const normSev = (f.severity || 'Medium').toLowerCase();
+              const sevLabel =
+                f.severity_label ||
+                (normSev === 'critical' || normSev === 'high'
+                  ? 'Blocks the goal'
+                  : normSev === 'medium'
+                  ? 'Slows people down'
+                  : 'Minor polish');
+              const badgeVariant =
+                normSev === 'critical'
+                  ? 'critical'
+                  : normSev === 'high'
+                  ? 'high'
+                  : normSev === 'medium'
+                  ? 'medium'
+                  : 'low';
+              const humanWhere = f.where;
+              const affectedCount = f.affected_count;
+              const whatHappened = f.what_happened;
+              const whyItMatters = f.why_it_matters || f.impact;
+              const howToFix = f.how_to_fix || f.recommendation || f.suggested_fix;
+              const stepNum = f.step_number || f.evidence_steps?.[0] || 1;
+              const caption =
+                f.screenshot_caption ||
+                `Step ${stepNum}: ${humanWhere || 'the highlighted section'}`;
+              const tech = f.technical;
+              const techCode =
+                tech?.suggested_css_or_html ||
+                (f.suggested_fix &&
+                (f.suggested_fix.startsWith('CSS:') ||
+                  f.suggested_fix.startsWith('HTML:') ||
+                  f.suggested_fix.startsWith('JS:'))
+                  ? f.suggested_fix
+                  : null);
+
+              return (
                 <Card key={idx} className="p-6">
-                  {/* Card Header */}
+                  {/* Card Header: Severity & Evidence */}
                   <div className="flex flex-wrap items-center justify-between gap-3 mb-2">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <Badge variant={f.severity}>{f.severity}</Badge>
+                      <Badge variant={badgeVariant as any}>
+                        {f.severity} · {sevLabel}
+                      </Badge>
                       {f.consistency && (
                         <span className="text-[10px] uppercase font-bold font-mono px-2 py-0.5 rounded bg-canvas border border-stone text-muted">
                           {f.consistency}
@@ -815,69 +1052,61 @@ export function Report({
                             key={n}
                             step={n}
                             hasFriction
-                            severity={f.severity}
+                            severity={normSev as any}
                             onClick={() => jumpToStep(n)}
                           />
                         ))}
                       </div>
-                    ) : (
-                      <div className="flex items-center gap-1 text-[11px] text-severity-medium-fg font-medium">
-                        <Info className="w-3.5 h-3.5" />
-                        <span>No direct evidence</span>
-                      </div>
-                    )}
+                    ) : null}
                   </div>
 
-                  {/* Finding Title */}
+                  {/* Finding Title (5-9 words, no jargon) */}
                   <h4 className="font-bold text-base text-ink mb-2">{f.title}</h4>
 
-                  {/* Description & Impact */}
-                  <p className="text-sm text-ink/90 leading-relaxed mb-2">{f.what_happened}</p>
-                  <p className="text-xs text-muted leading-relaxed">
-                    <strong className="text-ink">Impact:</strong> {f.impact}
-                  </p>
-
-                  {/* Selector Block */}
-                  {f.selector && (
-                    <div className="mt-3">
-                      <CodeChip code={f.selector} prefix="SELECTOR" />
+                  {/* Where & Affected Count Badges (Human description, never selector) */}
+                  {(humanWhere || affectedCount) && (
+                    <div className="flex flex-wrap items-center gap-2 mb-3">
+                      {humanWhere && (
+                        <span className="px-2.5 py-0.5 rounded-lg text-xs font-semibold bg-gremlin/15 text-ink border border-gremlin/30">
+                          {humanWhere}
+                        </span>
+                      )}
+                      {affectedCount && (
+                        <span className="px-2.5 py-0.5 rounded-lg text-xs font-mono font-medium bg-canvas text-muted border border-stone">
+                          {affectedCount}
+                        </span>
+                      )}
                     </div>
                   )}
 
-                  {/* Suggested Fix Block */}
-                  {f.suggested_fix ? (
-                    <div className="mt-3 p-3 bg-canvas border border-stone rounded-xl font-mono text-xs text-ink whitespace-pre-wrap">
-                      <div className="text-[10px] uppercase tracking-wider text-muted font-sans font-bold mb-1">
-                        Suggested Fix
-                      </div>
-                      {f.suggested_fix}
-                    </div>
-                  ) : (
-                    <p className="mt-2 text-xs text-gremlin-dark font-medium">
-                      <strong>Fix Recommendation:</strong> {f.recommendation}
+                  {/* What Happened & Why It Matters */}
+                  <p className="text-sm text-ink/90 leading-relaxed mb-2">{whatHappened}</p>
+                  {whyItMatters && (
+                    <p className="text-xs text-muted leading-relaxed mb-3">
+                      <strong className="text-ink">Why it matters:</strong> {whyItMatters}
                     </p>
                   )}
 
-                  {/* Defect Screenshot with 2px Red Outline */}
+                  {/* Plain Language Fix */}
+                  {howToFix && (
+                    <div className="p-3 bg-severity-low-bg/30 border border-severity-low-fg/30 rounded-xl text-xs text-ink mb-4">
+                      <strong className="text-severity-low-fg block font-semibold mb-0.5">
+                        How to fix:
+                      </strong>
+                      {howToFix}
+                    </div>
+                  )}
+
+                  {/* Cropped Screenshot with 400px+ width, red highlight, and human caption */}
                   {f.screenshot && (
-                    <div className="mt-4 overflow-hidden rounded-xl border border-stone bg-canvas p-2">
-                      <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-muted flex items-center justify-between font-semibold mb-1">
-                        <span>
-                          Defect Highlight (Step {f.step_number || f.evidence_steps?.[0] || 1})
-                        </span>
-                        {f.bounding_box && (
-                          <span className="font-mono text-[9px]">
-                            [{f.bounding_box.width}×{f.bounding_box.height}px]
-                          </span>
-                        )}
+                    <div className="mt-3 overflow-hidden rounded-xl border border-stone bg-canvas p-2">
+                      <div className="px-3 py-1 text-xs text-muted flex items-center justify-between font-medium mb-1.5">
+                        <span>{caption}</span>
                       </div>
                       <div
                         role="button"
                         tabIndex={0}
-                        onClick={() => {
-                          const stepNum = f.step_number || f.evidence_steps?.[0];
-                          if (stepNum) jumpToStep(stepNum);
-                        }}
+                        onClick={() => jumpToStep(stepNum)}
                         className="cursor-pointer relative overflow-hidden bg-surface p-2 flex items-center justify-center rounded-lg border border-stone"
                         title="Click to jump into Step Replay"
                       >
@@ -889,10 +1118,95 @@ export function Report({
                       </div>
                     </div>
                   )}
+
+                  {/* Developer-Only Technical Details (Collapsible & Hidden by default) */}
+                  <details className="mt-4 pt-3 border-t border-stone/50 text-xs text-muted">
+                    <summary className="cursor-pointer font-semibold hover:text-ink select-none flex items-center gap-1.5 py-1">
+                      <span>Show technical details (for developers)</span>
+                    </summary>
+                    <div className="mt-2.5 p-3 rounded-xl bg-canvas border border-stone space-y-2 font-mono text-[11px] text-muted">
+                      {tech?.rule_id && (
+                        <div>
+                          <span className="text-muted uppercase font-bold text-[10px] block font-sans">
+                            Automated Check:
+                          </span>
+                          <span className="text-ink">{tech.rule_id}</span>
+                        </div>
+                      )}
+                      {tech?.wcag && (
+                        <div>
+                          <span className="text-muted uppercase font-bold text-[10px] block font-sans">
+                            Guideline:
+                          </span>
+                          <span className="text-ink">{tech.wcag}</span>
+                        </div>
+                      )}
+                      {(tech?.selector || f.selector) && (
+                        <div>
+                          <span className="text-muted uppercase font-bold text-[10px] block font-sans">
+                            Technical Target:
+                          </span>
+                          <span className="text-ink break-all">{tech?.selector || f.selector}</span>
+                        </div>
+                      )}
+                      {techCode && (
+                        <div>
+                          <span className="text-muted uppercase font-bold text-[10px] block font-sans">
+                            Suggested Code Snippet:
+                          </span>
+                          <pre className="mt-1 p-2 bg-surface rounded border border-stone text-ink overflow-x-auto whitespace-pre-wrap">
+                            {techCode}
+                          </pre>
+                        </div>
+                      )}
+                    </div>
+                  </details>
                 </Card>
-              ))
-            )}
-          </div>
+              );
+            };
+
+            return (
+              <>
+                <div className="flex flex-col gap-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-base font-bold text-ink flex items-center gap-2">
+                      <span>Top problems to fix first</span>
+                      <span className="text-xs font-mono font-normal px-2.5 py-0.5 rounded-full bg-surface border border-stone text-muted">
+                        {topFindings.length} {topFindings.length === 1 ? 'Problem' : 'Problems'}
+                      </span>
+                    </h3>
+                  </div>
+
+                  {topFindings.length === 0 ? (
+                    <div className="p-8 text-center text-muted text-sm bg-surface border border-stone rounded-2xl">
+                      No critical usability vulnerabilities detected for this persona.
+                    </div>
+                  ) : (
+                    topFindings.map((f, idx) => renderFindingCard(f, idx + 1))
+                  )}
+                </div>
+
+                {/* ================================================================= */}
+                {/* 5. "MORE MINOR ISSUES" (COLLAPSED LIST)                           */}
+                {/* ================================================================= */}
+                {minorFindings.length > 0 && (
+                  <details className="group border border-stone rounded-2xl bg-surface/60 p-5 transition-all">
+                    <summary className="cursor-pointer font-bold text-sm text-ink select-none flex items-center justify-between">
+                      <span>More minor issues ({minorFindings.length} found)</span>
+                      <span className="text-xs text-muted font-normal group-open:hidden">
+                        Click to expand
+                      </span>
+                    </summary>
+                    <div className="mt-4 flex flex-col gap-4 pt-4 border-t border-stone/60">
+                      {minorFindings.map((f, idx) =>
+                        renderFindingCard(f, topFindings.length + idx + 1)
+                      )}
+                    </div>
+                  </details>
+                )}
+              </>
+            );
+          })()}
         </main>
       )}
 
